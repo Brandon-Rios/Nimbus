@@ -833,19 +833,119 @@ document.addEventListener('contextmenu', (e) => {
 });
 
 // ---------- slash commands in the message box ----------
-const SLASH = [['/context', 'Open chat details: what’s using this chat’s context'], ['/compact', 'Shrink this chat’s history so it uses less context (memory is kept)'], ['/new', 'Start this thread fresh (memory is kept)']];
+// Slash commands, like Claude Code. Nimbus's own run here (no Claude usage); /compact and the bot's skills,
+// custom commands and plugin commands (from /api/bots/:id/commands) go to Claude Code as typed.
+// [command, args hint, description, handler(arg, bot) or null = send to the bot]
+const SLASH = [
+  ['/help', '', 'List every command', () => slashHelp()],
+  ['/context', '', 'What’s using this chat’s context', (a, b) => openInfo(b)],
+  ['/compact', '', 'Shrink this chat’s history so it uses less context (memory is kept)', null],
+  ['/new', '', 'Start this thread fresh (memory is kept)', () => api(`/api/bots/${S.current.id}/reset`, { method: 'POST', body: { thread: threadKey() } })],
+  ['/clear', '', 'Same as /new', () => api(`/api/bots/${S.current.id}/reset`, { method: 'POST', body: { thread: threadKey() } })],
+  ['/model', '[name]', 'Change this bot’s model', (a, b) => slashModel(a, b)],
+  ['/effort', '[low|medium|high|xhigh|max]', 'Change this bot’s effort', (a, b) => slashEffort(a, b)],
+  ['/usage', '', 'How much of your Claude plan is left', () => slashUsage()],
+  ['/cost', '', 'Same as /usage', () => slashUsage()],
+  ['/stop', '', 'Stop what the bot is doing in this thread', () => slashStop()],
+  ['/memory', '', 'Open the bot’s memory', (a, b) => memoryModal(b)],
+  ['/plugins', '', 'Turn plugins on or off for this bot', (a, b) => botPluginsModal(b)],
+  ['/routines', '', 'The bot’s scheduled routines', (a, b) => routinesModal(b)],
+  ['/rename', '<name>', 'Rename this thread', (a) => slashRename(a)],
+  ['/thread', '[name]', 'Start a new thread with this bot', (a, b) => slashThread(a, b)],
+  ['/project', '', 'Move this thread into a project', () => { const t = threadOf(threadKey()); if (t?.kind !== 'chat') return toast('Start a thread with /thread first: General, Inbox and Routines stay where they are'); moveThreadModal(t); }],
+  ['/browser', '', 'Open the bot’s browser', (a, b) => openBrowser(b.id)],
+  ['/split', '[down]', 'Split the view into another pane', (a) => paneCmd(/^d/i.test(a) ? 'split-down' : 'split-right')],
+  ['/shortcuts', '', 'Keyboard shortcuts', () => EMBED ? paneCmd('shortcuts') : shortcutsModal()]
+];
+const botCmds = new Map(); // bot id -> { at, list } (skills and custom commands, fetched when you type /)
+function loadBotCmds(id) {
+  const c = botCmds.get(id);
+  if (c && Date.now() - c.at < 60_000) return c.list;
+  botCmds.set(id, { at: Date.now(), list: c?.list || [] });
+  api(`/api/bots/${id}/commands`).then((r) => { botCmds.set(id, { at: Date.now(), list: r.commands || [] }); slashHint($('#msg')?.value || ''); }).catch(() => {});
+  return c?.list || [];
+}
 function slashHint(v) {
   let box = $('#slash-hint');
-  const show = S.current?.type === 'bot' && /^\/\w*$/.test(v);
-  const items = show ? SLASH.filter(([c]) => c.startsWith(v.toLowerCase())) : [];
+  const show = S.current?.type === 'bot' && /^\/[\w:.-]*$/.test(v);
+  const q = v.toLowerCase();
+  const items = !show ? [] : [
+    ...SLASH.filter(([c]) => c.startsWith(q)).map(([c, a, d]) => ({ c, a, d })),
+    ...loadBotCmds(S.current.id).filter((x) => x.cmd.toLowerCase().includes(q.slice(1)) && !SLASH.some(([c]) => c === x.cmd)).map((x) => ({ c: x.cmd, a: '', d: x.desc, src: x.source }))
+  ].slice(0, 40);
   if (!items.length) return box?.remove();
   if (!box) { box = document.createElement('div'); box.id = 'slash-hint'; box.className = 'slash-hint'; $('.composer').prepend(box); }
-  box.innerHTML = items.map(([c, d]) => `<button type="button" data-slash="${c}"><b>${c}</b><span>${d}</span></button>`).join('');
+  box.innerHTML = items.map((i) => `<button type="button" data-slash="${esc(i.c)}" data-args="${i.a ? 1 : ''}"><b>${esc(i.c)}</b>${i.a ? `<i>${esc(i.a)}</i>` : ''}<span>${esc(i.d)}</span>${i.src ? `<em>${esc(i.src)}</em>` : ''}</button>`).join('');
 }
 document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-slash]'); if (!b) return;
-  const ta = $('#msg'); ta.value = b.dataset.slash; $('#slash-hint')?.remove(); $('#composer').requestSubmit();
+  const ta = $('#msg'); $('#slash-hint')?.remove();
+  const local = SLASH.find(([c]) => c === b.dataset.slash);
+  // Commands that take words (and the bot's skills, which usually do) wait for you to type them.
+  if (b.dataset.args || !local) { ta.value = b.dataset.slash + ' '; ta.focus(); autosize(ta); return; }
+  ta.value = b.dataset.slash; $('#composer').requestSubmit();
 });
+// Runs a Nimbus command; returns true if the text was one (so it isn't sent to the bot).
+function runSlash(text) {
+  const m = text.match(/^(\/[\w-]+)(?:\s+([\s\S]*))?$/); if (!m || S.current?.type !== 'bot') return false;
+  const cmd = SLASH.find(([c]) => c === m[1].toLowerCase());
+  if (!cmd || !cmd[3]) return false;
+  Promise.resolve(cmd[3]((m[2] || '').trim(), bot(S.current.id))).catch((err) => toast(err.message));
+  return true;
+}
+function slashHelp() {
+  const mine = botCmds.get(S.current?.id)?.list || [];
+  const el = modal(`<h3>Slash commands</h3>
+    <p class="muted">Type <b>/</b> in a bot chat. These run in Nimbus and don’t use your plan:</p>
+    <div class="kb-list">${SLASH.filter(([, , , fn]) => fn).map(([c, a, d]) => `<div class="kb-row"><span><b>${c}</b> <i class="muted">${esc(a)}</i></span><span class="muted" style="flex:2">${esc(d)}</span></div>`).join('')}</div>
+    <p class="muted">Sent to the bot (Claude Code runs them, like a normal message): <b>/compact</b>${mine.length ? ` and this bot’s ${mine.length} skills and commands:` : '.'}</p>
+    ${mine.length ? `<div class="kb-list">${mine.map((x) => `<div class="kb-row"><span><b>${esc(x.cmd)}</b></span><span class="muted" style="flex:2">${esc(x.desc)} <em>· ${esc(x.source)}</em></span></div>`).join('')}</div>` : ''}
+    <div class="row"><button class="btn primary" data-close>Done</button></div>`, { wide: true });
+  el.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeModal(); });
+}
+async function slashModel(arg, b) {
+  if (!arg) return botModal(b);
+  const r = await api('/api/models');
+  if (!r?.ok) throw new Error('Couldn’t load models');
+  const q = arg.toLowerCase(), m = /^default$/.test(q) ? { id: '', name: 'Default' } : r.models.find((x) => x.id.toLowerCase() === q) || r.models.find((x) => x.name.toLowerCase().includes(q) || x.id.toLowerCase().includes(q));
+  if (!m) return toast(`No model matches “${arg}”. Try: ${r.models.map((x) => x.name).join(', ')}, default`);
+  await api(`/api/bots/${b.id}`, { method: 'PATCH', body: { model: m.id } });
+  await refreshState(); renderMain(); toast(`${b.name} now uses ${m.name}`);
+}
+async function slashEffort(arg, b) {
+  if (!arg) return $('[data-act="effort-menu"]')?.click();
+  const e = EFFORTS.find(([v, l]) => v === arg.toLowerCase() || l.toLowerCase() === arg.toLowerCase() || v.startsWith(arg.toLowerCase()));
+  if (!e) return toast('Effort: ' + EFFORTS.map(([v]) => v).join(', '));
+  await api(`/api/bots/${b.id}`, { method: 'PATCH', body: { effort: e[0] } });
+  await refreshState(); renderMain(); toast(`Effort: ${e[1]}`);
+}
+async function slashUsage() {
+  const p = await api('/api/plan-usage');
+  if (!p?.ok) return toast('Couldn’t read your plan usage right now');
+  const el = modal(`<h3>Claude plan${p.plan ? ` · ${esc(p.plan[0].toUpperCase() + p.plan.slice(1))}` : ''}</h3>` + p.windows.map((w) => {
+    const left = Math.max(0, Math.round(100 - w.used));
+    return `<div class="row"><span>${esc(w.label)}</span><span><b>${left}% left</b></span></div>
+      <div class="meter ${w.used >= 90 ? 'hot' : w.used >= 70 ? 'warm' : ''}"><div style="width:${Math.min(100, w.used)}%"></div></div>
+      <div class="muted small">${Math.round(w.used)}% used${w.resets ? ` · resets in ${resetsIn(w.resets)}` : ''}</div>`;
+  }).join('') + '<div class="row"><button class="btn primary" data-close>Done</button></div>', { cls: 'usage-modal' });
+  el.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeModal(); });
+}
+async function slashStop() {
+  const b = [...document.querySelectorAll('#thread [data-stop]')].pop();
+  if (!b) return toast('Nothing is running in this thread');
+  await api(`/api/runs/${b.dataset.stop}/stop`, { method: 'POST' }); toast('Stopped');
+}
+async function slashRename(name) {
+  const t = threadOf(threadKey());
+  if (t?.kind !== 'chat') return toast('Only threads you started can be renamed (not General, Inbox or Routines)');
+  if (!name) name = prompt('Thread name', t.title || ''); if (!name) return;
+  await api(`/api/threads/${t.id}`, { method: 'PATCH', body: { title: name } }); await refreshState(); renderMain();
+}
+async function slashThread(name, b) {
+  const t = threadOf(threadKey());
+  const { key } = await api('/api/threads', { method: 'POST', body: { botId: b.id, projectId: t?.kind === 'chat' ? t.project_id : null, title: name || '' } });
+  sideOpen[b.id] = true; saveSideOpen(); await refreshState(); openThread(key);
+}
 
 // ---------- read aloud ----------
 // Plays a bot reply spoken by Piper on the server. Tapping again (or another reply) stops it.
@@ -2848,15 +2948,17 @@ function refreshSideOnly() {
 }
 document.addEventListener('keydown', (e) => {
   if (e.target.id === 'msg' && e.key === 'Enter' && !e.shiftKey && !e.isComposing && matchMedia('(pointer: fine)').matches) {
-    e.preventDefault(); $('#composer').requestSubmit();
+    e.preventDefault();
+    // A half-typed command with the list open: Enter picks the top match.
+    const first = $('#slash-hint [data-slash]'), v = e.target.value.trim();
+    if (first && /^\/[\w:.-]*$/.test(v) && !SLASH.some(([c]) => c === v.toLowerCase()) && !botCmds.get(S.current?.id)?.list.some((x) => x.cmd === v)) return first.click(); $('#composer').requestSubmit();
   }
 });
 document.addEventListener('submit', async (e) => {
   if (e.target.id !== 'composer') return;
   e.preventDefault();
   const ta = $('#msg'); const text = ta.value.trim();
-  if (/^\/context$/i.test(text) && S.current?.type === 'bot') { ta.value = ''; autosize(ta); return openInfo(bot(S.current.id)); }
-  if (/^\/(new|clear)$/i.test(text)) { ta.value = ''; autosize(ta); await api(`/api/bots/${S.current.id}/reset`, { method: 'POST', body: { thread: threadKey() } }); return; }
+  if (!attachments.length && runSlash(text)) { ta.value = ''; autosize(ta); $('#slash-hint')?.remove(); return; }
   if (attachments.some((a) => !a.id && !a.error)) return toast('Still uploading…');
   const files = attachments.filter((a) => a.id).map((a) => a.id);
   if (!text && !files.length) return;

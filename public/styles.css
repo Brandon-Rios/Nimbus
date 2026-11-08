@@ -824,3 +824,8 @@ html.embed .head { padding-left: 10px; }
 .kb-row.fixed kbd { color: var(--muted); }
 .kb-clear { width: 26px; height: 26px; opacity: .6; }
 .kb-row.fixed { padding-right: 38px; }
+.slash-hint { max-height: 320px; overflow-y: auto; }
+.slash-hint button i { color: var(--faint); font-style: normal; font-size: 12px; font-family: var(--mono); }
+.slash-hint button span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slash-hint button em { font-style: normal; font-size: 11px; color: var(--faint); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; flex-shrink: 0; }
+.usage-modal .meter { margin: 4px 0; }

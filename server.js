@@ -15,6 +15,7 @@ import { UPLOADS, MAX_UPLOAD, safeName, uploadPath, readUpload, saveUpload, addV
 import { claudeEnv, claudeStatus, setClaudeToken, TOKEN_RE } from './claudeauth.js';
 import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport, cancelQueued, editQueued, threadLimit } from './runner.js';
 import * as TH from './threads.js';
+import { botCommands } from './slash.js';
 import { ensureBrowser, watchBrowser, browserInput, closeBrowser } from './browser.js';
 import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
 import { startScheduler, nextRun, isValidCron } from './scheduler.js';
@@ -475,6 +476,7 @@ route('POST', '/api/bots', async (req, res) => {
   const r = q('INSERT INTO bots (name, approval_rules) VALUES (?,?)').run(b.name.trim(), defaults);
   json(res, 200, saveBot(r.lastInsertRowid, cleanBot(b)));
 });
+route('GET', '/api/bots/:id/commands', async (req, res, p) => json(res, 200, { commands: await botCommands(p.id) }));
 route('PATCH', '/api/bots/:id', async (req, res, p) => json(res, 200, saveBot(Number(p.id), cleanBot(await body(req)))));
 route('DELETE', '/api/bots/:id', (req, res, p) => {
   const had = q('SELECT computer FROM bots WHERE id=?').get(p.id)?.computer;
