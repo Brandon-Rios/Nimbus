@@ -1,6 +1,7 @@
 // Nimbus web app. Plain JS, no build step.
 import { attachAutocorrect } from './autocorrect.js';
 import { THEMES, resolveTheme, applyThemeVars } from './themes.js';
+import { startVoice, voiceMessage } from './voice.js';
 import { startRecording, stopRecording, cancelRecording, isRecording, browserDictation } from './dictation.js';
 const $ = (s, el = document) => el.querySelector(s);
 // Split panes: an extra pane is this same app in a frame (?pane=<id>), showing one chat without the sidebar.
@@ -37,6 +38,7 @@ const ICON = {
   check: svg('<path d="m5 12 5 5 9-10"/>', 14),
   sidebar: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>'),
   chevron: svg('<path d="m9 6 6 6-6 6"/>', 14),
+  voice: svg('<path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/>'),
   mic: svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'),
   clip: svg('<path d="m20 11.5-8.3 8.3a5 5 0 0 1-7-7l8.8-8.8a3.3 3.3 0 0 1 4.7 4.7l-8.8 8.8a1.7 1.7 0 0 1-2.4-2.4l8.1-8.1"/>'),
   keyboard: svg('<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>'),
@@ -444,7 +446,7 @@ function renderSide() {
       <button class="icon-btn side-collapse" data-act="side-collapse" aria-label="Collapse sidebar" title="Collapse sidebar (${esc(kbLabel(kbGet('sidebar')))})">${ICON.sidebar}</button>
     </div>
     <div class="side-list">
-      ${items.length ? items.map((it) => `
+      ${items.length ? sideSections(items).map(([g, list]) => (g ? `<div class="side-group-head" data-group="${g.id}"><span class="side-caret ${g.collapsed ? '' : 'open'}">${TI.chev}</span><span class="g-name">${esc(g.name)}</span><span class="g-count">${list.length}</span><span class="icon-btn g-edit" data-group-edit="${g.id}" role="button" aria-label="Edit group">${ICON.dots || '⋯'}</span></div><div class="side-group-body" ${g.collapsed && !sideQuery ? 'hidden' : ''}>` : '') + list.map((it) => `
         <button class="side-item ${key === it.key || (it.bot && S.current?.type === 'bot' && S.current.id === it.bot.id && !sideIsOpen(it.bot.id)) ? 'active' : ''}" data-open="${it.key}" data-key="${it.key}">
           <span class="av-wrap">${it.av}${it.state !== 'idle' ? `<span class="dot ${it.state}"></span>` : ''}</span>
           <span class="meta">
@@ -452,7 +454,7 @@ function renderSide() {
             <span class="sub">${esc(it.last ? (it.last.author === 'user' ? 'You: ' : '') + it.last.text : it.fallback || 'Say hi')}</span>
           </span>
           ${it.bot ? `<span class="side-caret ${sideIsOpen(it.bot.id) ? 'open' : ''}" data-expand="${it.bot.id}" role="button" aria-label="Show threads">${TI.chev}</span>` : ''}
-        </button>${it.bot && !sideQuery && sideIsOpen(it.bot.id) ? sideTree(it.bot, key) : ''}`).join('') + (sideQuery ? '' : sharedProjects(key)) + (sideQuery ? '' : d.sideOrder ? '<button class="side-reset" data-act="side-recent">↺ Sort by recent activity</button>'
+        </button>${it.bot && !sideQuery && sideIsOpen(it.bot.id) ? sideTree(it.bot, key) : ''}`).join('') + (g ? '</div>' : '')).join('') + (sideQuery ? '' : sharedProjects(key)) + (sideQuery ? '' : d.sideOrder ? '<button class="side-reset" data-act="side-recent">↺ Sort by recent activity</button>'
           : items.length > 1 ? '<div class="side-hint">Tip: drag chats to arrange them</div>' : '')
         : sideQuery ? '<div class="side-empty">No chats match</div>'
         : `<div class="side-empty">No bots yet.<br><button class="link" data-act="market">Browse Connectors</button> or <button class="link" data-act="new-bot">make one</button>.</div>`}
@@ -472,6 +474,45 @@ renderSide = function () {
   if (drag?.started) return; // don't rebuild the list under your finger mid-drag
   _renderSide(); if (sideQuery.length >= 2) searchMessages(); // keep message hits after re-renders
 };
+
+// Sidebar groups: ungrouped chats first, then each group in its order. Empty groups still show (when not searching).
+function sideSections(items) {
+  const groups = S.data.sideGroups || [], byKey = new Map(items.map((it) => [it.key, it])), used = new Set();
+  const out = groups.map((g) => { const list = items.filter((it) => g.keys.includes(it.key)); list.forEach((it) => used.add(it.key)); return [g, list]; });
+  return [[null, items.filter((it) => !used.has(it.key))], ...out.filter(([, l]) => l.length || !sideQuery)].filter(([g, l]) => g || l.length);
+}
+function saveGroups() { renderSide(); return api('/api/side-groups', { method: 'PUT', body: { groups: S.data.sideGroups } }).catch((err) => toast(err.message)); }
+document.addEventListener('click', (e) => {
+  const ed = e.target.closest('[data-group-edit]');
+  if (ed) { e.stopPropagation(); return groupModal((S.data.sideGroups || []).find((g) => g.id === ed.dataset.groupEdit)); }
+  const h = e.target.closest('.side-group-head'); if (!h) return;
+  const g = (S.data.sideGroups || []).find((x) => x.id === h.dataset.group); if (g) { g.collapsed = !g.collapsed; saveGroups(); }
+});
+function groupModal(g) {
+  const isNew = !g;
+  g = g || { id: Math.random().toString(36).slice(2, 10), name: '', collapsed: false, keys: [] };
+  const inOther = new Map((S.data.sideGroups || []).filter((x) => x.id !== g.id).flatMap((x) => x.keys.map((k) => [k, x.name])));
+  const chats = [...S.data.bots.map((b) => ['bot:' + b.id, avatar(b, 28), b.name]), ...S.data.rooms.map((r) => ['room:' + r.id, roomAvatar(r, 28), r.name])];
+  const el = modal(`
+    <div class="modal-head"><h2>${isNew ? 'New sidebar group' : 'Edit group'}</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <label class="field">Name<input id="g-name" value="${esc(g.name)}" placeholder="Homelab"></label>
+    <div class="field">Bots and chats<div class="picks">${chats.map(([k, av, name]) => `<label class="pick ${g.keys.includes(k) ? 'on' : ''}"><input type="checkbox" data-key="${k}" ${g.keys.includes(k) ? 'checked' : ''}>${av}<span>${esc(name)}${inOther.has(k) ? ` <span class="hint">(in ${esc(inOther.get(k))})</span>` : ''}</span></label>`).join('')}</div></div>
+    <div class="modal-foot">
+      ${isNew ? '' : '<button class="btn danger left" id="g-del">Delete group</button>'}
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn primary" id="g-save">${isNew ? 'Create group' : 'Save'}</button>
+    </div>`);
+  el.addEventListener('change', (e) => e.target.dataset.key && e.target.closest('.pick').classList.toggle('on', e.target.checked));
+  $('#g-save', el).onclick = () => {
+    const keys = [...el.querySelectorAll('input[data-key]:checked')].map((i) => i.dataset.key);
+    const groups = (S.data.sideGroups || []).filter((x) => x.id !== g.id).map((x) => ({ ...x, keys: x.keys.filter((k) => !keys.includes(k)) }));
+    const next = { ...g, name: $('#g-name', el).value.trim() || 'Group', keys };
+    if (isNew) groups.push(next); else groups.splice((S.data.sideGroups || []).findIndex((x) => x.id === g.id), 0, next);
+    S.data.sideGroups = groups; closeModal(); saveGroups();
+  };
+  const del = $('#g-del', el);
+  if (del) del.onclick = () => { S.data.sideGroups = S.data.sideGroups.filter((x) => x.id !== g.id); closeModal(); saveGroups(); };
+}
 
 // A bot's threads show when you expand it; the bot you're in is expanded unless you closed it.
 function sideIsOpen(id) { return sideOpen[id] ?? (S.current?.type === 'bot' && S.current.id === id); }
@@ -510,7 +551,7 @@ function dragMove(y) {
   }
   const { item, list } = drag;
   // Follow the pointer, then swap with a neighbour once the pointer passes its middle.
-  const siblings = [...list.querySelectorAll('.side-item:not(.dragging)')];
+  const siblings = [...list.querySelectorAll(':scope > .side-item:not(.dragging)')];
   const target = siblings.find((el) => { const r = el.getBoundingClientRect(); return y < r.top + r.height / 2; });
   const before = siblings.map((el) => [el, el.getBoundingClientRect().top]);
   const next = item.nextElementSibling?.classList.contains('side-item') ? item.nextElementSibling : null;
@@ -537,7 +578,7 @@ async function dragEnd() {
   was.item.classList.remove('dragging'); was.item.style.transform = '';
   document.body.classList.remove('reordering');
   suppressClickUntil = Date.now() + 400; // the click that follows a drag shouldn't open the chat
-  const order = [...was.list.querySelectorAll('.side-item')].map((el) => el.dataset.key);
+  const order = [...was.list.closest('.side-list').querySelectorAll('.side-item[data-key]')].map((el) => el.dataset.key);
   S.data.sideOrder = order;
   renderSide();
   try { await api('/api/side-order', { method: 'PUT', body: { order } }); } catch (err) { toast(err.message); }
@@ -713,6 +754,7 @@ function renderMain() {
           <label class="effort" title="Effort: higher is smarter but uses more of your plan">
             <button class="effort-btn" data-act="effort-menu" aria-label="Effort" aria-haspopup="menu">${esc(EFFORTS.find(([v]) => v === b.effort)?.[1] || 'Medium')}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m6 9 6 6 6-6"/></svg></button>
           </label>
+          <button class="icon-btn" data-act="voice" title="Voice chat: talk with ${esc(b.name)} out loud" aria-label="Voice chat">${ICON.voice}</button>
           <button class="icon-btn" data-act="routines" title="Routines" aria-label="Routines">${ICON.clock}${nRoutines ? `<i class="count">${nRoutines}</i>` : ''}</button>
           ${b.computer && S.data.computers ? `<button class="icon-btn" data-act="computer" title="${esc(b.name)}’s computer" aria-label="Computer">${ICON.monitor}</button>` : ''}
           ${b.computer && S.data.computers ? '' : `<button class="icon-btn" data-act="browser" title="Browser: watch and use this bot’s browser" aria-label="Browser">${ICON.globe}</button>`}
@@ -1206,6 +1248,7 @@ function connect() {
   const es = new EventSource('/api/events');
   es.addEventListener('message', (e) => {
     const m = JSON.parse(e.data);
+    voiceMessage(m);
     if (m.thread === threadKey() && m.author !== 'user' && isArtifactMsg(m) && !S.messages.some((x) => x.id === m.id)) artifactAdded();
     if (m.thread === threadKey() && !S.messages.some((x) => x.id === m.id)) {
       const prev = S.messages[S.messages.length - 1];
@@ -2842,7 +2885,7 @@ document.addEventListener('click', async (e) => {
   const act = t.dataset.act;
   if (act) closePopover();
   switch (act) {
-    case 'new-menu': e.stopPropagation(); return popover(t, [...(cur ? [['new-thread', `New thread with ${esc(cur.name)}`, TI.chat]] : []), ['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['new-shared-project', 'New shared project', ICON.folder], ['market', 'Browse Connectors', ICON.grid]]);
+    case 'new-menu': e.stopPropagation(); return popover(t, [...(cur ? [['new-thread', `New thread with ${esc(cur.name)}`, TI.chat]] : []), ['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['new-side-group', 'New sidebar group', ICON.folder], ['new-shared-project', 'New shared project', ICON.folder], ['market', 'Browse Connectors', ICON.grid]]);
     case 'claude': return claudeModal();
     case 'docs': return docsModal();
     case 'artifacts': return openArtifacts();
@@ -2851,6 +2894,7 @@ document.addEventListener('click', async (e) => {
     case 'new-bot': return botModal();
     case 'edit-bot': return botModal(cur);
     case 'new-room': return roomModal();
+    case 'new-side-group': return groupModal();
     case 'edit-room': return roomModal(room(S.current.id));
     case 'routines': return routinesModal(cur);
     case 'memory': return memoryModal(cur);
@@ -2860,6 +2904,7 @@ document.addEventListener('click', async (e) => {
     case 'appearance': return appearanceModal();
     case 'attach': return $('#file-pick').click();
     case 'dictate': return toggleDictation(t);
+    case 'voice': { const b = bot(S.current?.id); return b && startVoice({ api, thread: threadKey(), botName: b.name, avatarHtml: avatar(b, 28), toast }); }
     case 'mfa': return mfaModal();
     case 'server': return serverModal();
     case 'log': return activityLogModal();

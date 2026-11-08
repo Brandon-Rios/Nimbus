@@ -5,7 +5,7 @@ const RATE = 16000, MAX_SECONDS = 300;
 
 let rec = null; // { stream, ctx, node, chunks, inRate, started, timer, onLevel }
 
-function toWav(chunks, inRate) {
+export function toWav(chunks, inRate) {
   // Join, then downsample by averaging each output sample's window.
   const total = chunks.reduce((n, c) => n + c.length, 0);
   const all = new Float32Array(total);
@@ -26,7 +26,7 @@ function toWav(chunks, inRate) {
   new Int16Array(buf, 44).set(pcm);
   return new Uint8Array(buf);
 }
-function base64(bytes) {
+export function base64(bytes) {
   let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return btoa(s);
 }

@@ -3,7 +3,7 @@
 // text muted faint bubble user userText btn btnHover primary primaryText, then accent.
 const V = ['bg', 'side', 'panel', 'card', 'hover', 'active', 'line', 'line-strong', 'text', 'muted', 'faint',
   'bubble', 'user', 'user-text', 'btn', 'btn-hover', 'primary', 'primary-text'];
-const t = (name, scheme, accent, colors) => ({ name, scheme, accent, vars: colors ? Object.fromEntries(colors.split(' ').map((c, i) => [V[i], c])) : null });
+const t = (name, scheme, accent, colors, skin) => ({ name, scheme, accent, skin, vars: colors ? Object.fromEntries(colors.split(' ').map((c, i) => [V[i], c])) : null });
 
 export const THEMES = {
   dark: t('Nimbus Dark', 'dark', '#3b82f6'),
@@ -19,7 +19,17 @@ export const THEMES = {
   paper: t('Paper', 'light', '#b0562a', '#fbf7ef #f3ecdf #efe7d8 #fffcf6 #ebe2d1 #e3d8c4 #e4dac8 #d3c6ae #2b2620 #776c5d #a89c88 #f1e9da #2b2620 #fbf7ef #ece3d2 #e3d8c4 #2b2620 #fbf7ef'),
   solarizedLight: t('Solarized Light', 'light', '#1d6fa8', '#fdf6e3 #f5eedb #eee8d5 #fffbef #e9e2cf #e1d9c4 #e4ddc9 #d3cbb5 #073642 #586e75 #93a1a1 #eee8d5 #073642 #fdf6e3 #eee8d5 #e1d9c4 #073642 #fdf6e3'),
   sky: t('Sky', 'light', '#2563eb', '#f7faff #eef4fd #e9f0fb #ffffff #e1eafa #d6e2f7 #dbe5f5 #c4d4ee #0f1b33 #5a6b8a #93a2bd #e8effb #1d4ed8 #ffffff #e6eefb #d6e2f7 #1d4ed8 #ffffff'),
-  blossom: t('Blossom', 'light', '#db2777', '#fff8fb #fdeef4 #fbe9f1 #ffffff #f8e0eb #f3d3e2 #f4dbe6 #e9c3d5 #2e1622 #82586c #b896a6 #fbe7f0 #9d174d #ffffff #f8e3ed #f3d3e2 #9d174d #ffffff')
+  blossom: t('Blossom', 'light', '#db2777', '#fff8fb #fdeef4 #fbe9f1 #ffffff #f8e0eb #f3d3e2 #f4dbe6 #e9c3d5 #2e1622 #82586c #b896a6 #fbe7f0 #9d174d #ffffff #f8e3ed #f3d3e2 #9d174d #ffffff'),
+  // Retro skins: a palette plus extra styling in styles.css ([data-skin=…]): bevels, title bars, fonts.
+  win95: t('Windows 95', 'light', '#000080', '#008080 #c0c0c0 #c0c0c0 #ffffff #d4d0c8 #000080 #808080 #404040 #000000 #303030 #707070 #ffffff #000080 #ffffff #c0c0c0 #d4d0c8 #000080 #ffffff', 'win95'),
+  xp: t('Windows XP', 'light', '#316ac5', '#ece9d8 #d6dff7 #ece9d8 #ffffff #c1d2ee #316ac5 #b5b2a2 #7f9db9 #000000 #444444 #808080 #ffffff #316ac5 #ffffff #f4f3ee #e3e2da #3c9a32 #ffffff', 'xp'),
+  vista: t('Windows Vista', 'dark', '#4cc2ff', '#0d1822 #13212e #162635 #1a2b3a #20364a #2a4a66 #24384a #34506a #eef6ff #9fb6cc #66809a #1c2e40 #3a8fd0 #ffffff #1f3346 #284259 #4cc2ff #04121f', 'vista'),
+  win7: t('Windows 7', 'light', '#3399ff', '#eaf1fb #dae6f4 #e3ecf7 #ffffff #dcebfc #c4dcf7 #c9d8ea #a6bdd8 #1e2b3a #4b5d73 #8798ad #ffffff #2b74c7 #ffffff #f1f5fa #e2ecf7 #2b74c7 #ffffff', 'win7'),
+  ubuntu: t('Ubuntu', 'dark', '#e95420', '#300a24 #2c001e #3a1030 #3f1535 #4a1b40 #5e2750 #4a1b40 #6b3460 #ffffff #c9b4c3 #8f7088 #3f1535 #e95420 #ffffff #4a1b40 #5e2750 #e95420 #ffffff', 'ubuntu'),
+  gnome: t('GNOME Adwaita', 'light', '#3584e4', '#fafafa #ebebeb #f6f5f4 #ffffff #e6e6e6 #dcdcdc #e0e0e0 #cdc7c2 #2e3436 #5e5c64 #9a9996 #f0f0f0 #3584e4 #ffffff #ececec #e0e0e0 #3584e4 #ffffff', 'gnome'),
+  breeze: t('KDE Breeze', 'dark', '#3daee9', '#1b1e20 #232629 #2a2e32 #31363b #3a4045 #3daee933 #3a4045 #4d5257 #fcfcfc #a1a9b1 #6e757c #31363b #3daee9 #ffffff #31363b #3a4045 #3daee9 #ffffff', 'breeze'),
+  mint: t('Linux Mint', 'dark', '#8bb158', '#2b2b2b #303030 #353535 #383838 #404040 #4a5a36 #404040 #505050 #e6e6e6 #a8a8a8 #747474 #383838 #8bb158 #1b1b1b #3a3a3a #454545 #8bb158 #1b1b1b', 'mint'),
+  terminal: t('Terminal', 'dark', '#33ff66', '#000000 #050805 #070b07 #0a100a #0f1a0f #123312 #134013 #1d5c1d #33ff66 #22bb4a #178a35 #071207 #33ff66 #000000 #0a170a #123312 #33ff66 #000000', 'term')
 };
 
 // "system" follows the device: one theme for dark mode, one for light.
@@ -30,6 +40,7 @@ export function resolveTheme(prefs, systemDark) {
 
 export function applyThemeVars(root, theme, accent) {
   root.dataset.theme = theme.scheme;
+  if (theme.skin) root.dataset.skin = theme.skin; else delete root.dataset.skin;
   for (const k of V) root.style.removeProperty('--' + k);
   if (theme.vars) for (const [k, v] of Object.entries(theme.vars)) root.style.setProperty('--' + k, v);
   root.style.setProperty('--accent', accent || theme.accent);

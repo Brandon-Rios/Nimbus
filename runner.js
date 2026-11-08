@@ -236,7 +236,7 @@ function mcpServers(botId, remote = false) {
 }
 
 // ---------- the main thing: run a bot ----------
-export function runBot({ botId, thread, prompt, depth = 0, source = 'user', parentRun = null, quiet = false, msgId = null, msgText = '' }) {
+export function runBot({ botId, thread, prompt, depth = 0, source = 'user', parentRun = null, quiet = false, msgId = null, msgText = '', voice = null }) {
   botId = Number(botId);
   const busy = !!q("SELECT 1 FROM runs WHERE bot_id=? AND thread=? AND status IN ('running','queued')").get(botId, thread) || (active.get(botId) || 0) >= threadLimit();
   const run = q('INSERT INTO runs (bot_id, thread, prompt, status, parent_run) VALUES (?,?,?,?,?)').run(botId, thread, redact(prompt), 'queued', parentRun);
@@ -248,7 +248,7 @@ export function runBot({ botId, thread, prompt, depth = 0, source = 'user', pare
     if (busy) setQueued(msgId, 1);
   }
   if (!botStatus.get(botId) || botStatus.get(botId).state === 'idle') setStatus(botId, 'queued', 'Queued');
-  enqueue({ runId, botId, thread, prompt, depth, source, quiet });
+  enqueue({ runId, botId, thread, prompt, depth, source, quiet, voice });
   return runId;
 }
 
@@ -332,7 +332,7 @@ export function editQueued(msgId, text) {
   return true;
 }
 
-function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
+function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) {
   return new Promise((resolve) => {
     const bot = parseBot(q('SELECT * FROM bots WHERE id=?').get(botId));
     const runRow = q('SELECT status FROM runs WHERE id=?').get(runId);
@@ -376,6 +376,8 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
       fullPrompt = prompt.trim();
     }
 
+    // Voice mode: the reply is spoken aloud, so keep it short and plain; 'fast' runs it on Haiku.
+    if (voice) fullPrompt += '\n\n(Voice conversation: the user is speaking out loud and will hear your reply read aloud. Reply in one to three short, natural spoken sentences. No markdown, lists, tables, code or links unless they ask. You can still use tools when needed.)';
     const remote = computersOn() && !!bot.computer;
     const hookPath = remote ? '/opt/nimbus/approval-hook.js' : HOOK;
     const settings = {
@@ -387,7 +389,7 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
       '--settings', JSON.stringify(settings)];
     const mcp = mcpServers(botId, remote);
     if (Object.keys(mcp).length) args.push('--mcp-config', JSON.stringify({ mcpServers: mcp }));
-    if (bot.model) args.push('--model', bot.model);
+    if (voice === 'fast') args.push('--model', 'haiku'); else if (bot.model) args.push('--model', bot.model);
     if (session) args.push('--resume', session);
 
     q("UPDATE runs SET status='running', started_at=unixepoch(), effort=? WHERE id=?").run(bot.effort, runId);

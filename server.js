@@ -118,11 +118,12 @@ function state(req) {
   for (const b of bots) b.plugins = botPlugins[b.id] || [];
   const installed = q('SELECT id FROM plugins').all().map((r) => r.id);
   const sideOrder = JSON.parse(getSetting('side_order') || 'null'); // custom sidebar order, or null = most recent first
+  const sideGroups = JSON.parse(getSetting('side_groups') || '[]'); // sidebar groups: [{ id, name, collapsed, keys }]
   const { threads, projects } = TH.listAll();
-  return { sideOrder, threads, projects, threadLimit: threadLimit(), bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), claude: claudeStatus(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
+  return { sideOrder, sideGroups, threads, projects, threadLimit: threadLimit(), bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), claude: claudeStatus(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
 }
 
-function postToThread(thread, text, files = []) {
+function postToThread(thread, text, files = [], voice = null) {
   if (thread.startsWith('t:')) {
     const t = TH.threadRow(thread);
     if (!t) throw Object.assign(new Error('This thread was deleted'), { status: 404 });
@@ -134,7 +135,7 @@ function postToThread(thread, text, files = []) {
   if (files.length) text = `${text || 'See the attached files.'}\n\nAttached files (open them with the Read tool):\n` + files.map((f) => `- ${uploadPath(f)} (${f.type || 'file'}, ${f.size} bytes)`).join('\n');
   if (thread.startsWith('bot:') || thread.startsWith('t:')) {
     TH.autoTitle(thread, msg.body);
-    runBot({ botId: TH.threadBot(thread), thread, prompt: text, msgId: msg.id, msgText: msg.body });
+    runBot({ botId: TH.threadBot(thread), thread, prompt: text, msgId: msg.id, msgText: msg.body, voice });
   } else if (thread.startsWith('room:')) {
     const roomId = Number(thread.slice(5));
     const room = q('SELECT * FROM rooms WHERE id=?').get(roomId);
@@ -166,10 +167,10 @@ route('GET', '/api/threads/:thread/messages', (req, res, p, url) => {
 });
 
 route('POST', '/api/threads/:thread/messages', async (req, res, p) => {
-  const { text = '', files: ids = [] } = await body(req);
+  const { text = '', files: ids = [], voice } = await body(req);
   const files = (Array.isArray(ids) ? ids : []).slice(0, 10).map(readUpload).filter(Boolean);
   if (!String(text).trim() && !files.length) return json(res, 400, { error: 'empty' });
-  try { json(res, 200, postToThread(decodeURIComponent(p.thread), String(text).trim(), files)); }
+  try { json(res, 200, postToThread(decodeURIComponent(p.thread), String(text).trim(), files, ['fast', 'bot'].includes(voice) ? voice : null)); }
   catch (e) { json(res, e.status || 500, { error: e.message }); }
 });
 
@@ -862,6 +863,21 @@ route('POST', '/api/messages/:id/redact', async (req, res, p) => {
   } catch {}
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); // don't leave the old text in the write-ahead log
   json(res, 200, { ok: true, messages: changed, transcripts: files });
+});
+
+// Sidebar groups (folders of chats), shared by all the user's devices.
+route('PUT', '/api/side-groups', async (req, res) => {
+  const { groups } = await body(req);
+  const seen = new Set();
+  const clean = (Array.isArray(groups) ? groups : []).slice(0, 50).map((g) => ({
+    id: String(g.id || '').replace(/[^\w-]/g, '').slice(0, 20) || Math.random().toString(36).slice(2, 10),
+    name: String(g.name || 'Group').trim().slice(0, 60) || 'Group',
+    collapsed: !!g.collapsed,
+    keys: (Array.isArray(g.keys) ? g.keys : []).filter((k) => /^(bot|room):\d+$/.test(k) && !seen.has(k) && seen.add(k)).slice(0, 500)
+  }));
+  setSetting('side_groups', JSON.stringify(clean));
+  broadcast('state_changed', {});
+  json(res, 200, { ok: true });
 });
 
 // Sidebar order the user arranged by dragging (shared by all their devices). null = sort by recent activity.
