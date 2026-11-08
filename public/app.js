@@ -2904,7 +2904,7 @@ document.addEventListener('click', async (e) => {
     case 'appearance': return appearanceModal();
     case 'attach': return $('#file-pick').click();
     case 'dictate': return toggleDictation(t);
-    case 'voice': { const b = bot(S.current?.id); return b && startVoice({ api, thread: threadKey(), botName: b.name, avatarHtml: avatar(b, 28), toast }); }
+    case 'voice': { const b = bot(S.current?.id); return b && startVoice({ api, thread: threadKey(), botName: b.name, avatarHtml: avatar(b, 28), character: { svg: critter(b.color, outfit(b)), color: b.color, ...outfit(b) }, toast }); }
     case 'mfa': return mfaModal();
     case 'server': return serverModal();
     case 'log': return activityLogModal();

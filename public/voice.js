@@ -12,7 +12,20 @@ const mode = () => localStorage.voiceMode === 'bot' ? 'bot' : 'fast';
 
 export function voiceActive() { return !!V; }
 
-// opts: { api, thread, botName, avatarHtml, toast }
+// The bot's own pixel character, big, with an animated mouth (follows the spoken audio) and eyelids.
+// Matches critter() in app.js: 14x14 grid, eyes at x 3.8 / 8.9 y 6, mouth around x 6.1-7.9 y 7.6-8.4.
+function character(c) {
+  if (!c) return '<div class="voice-orb"><span></span></div>';
+  const ink = '#16204a', col = c.color || '#f4f6ff', rect = (x, y, w, h, f, cls = '') => `<rect ${cls ? `class="${cls}" ` : ''}x="${x}" y="${y}" width="${w}" height="${h}" fill="${f}"/>`;
+  const mouthY = c.face === 'mustache' ? 8.3 : 7.6;
+  const cover = c.face === 'mustache' ? '' : rect(5.9, 7.5, 2.2, 1.6, col, 'vc-cover');
+  const lids = c.glasses && c.glasses !== 'none' ? '' : `<g class="vc-lids">${rect(3.7, 5.9, 1.5, 1.7, col)}${rect(8.8, 5.9, 1.5, 1.7, col)}${rect(3.7, 6.6, 1.5, 0.4, ink)}${rect(8.8, 6.6, 1.5, 0.4, ink)}</g>`;
+  return `<div class="voice-char"><div class="vc-body"><svg viewBox="0 0 14 14" shape-rendering="crispEdges" aria-hidden="true">${c.svg}
+    <g class="vc-mouth">${cover}${rect(6.2, mouthY, 1.6, 0.4, ink, 'vc-m')}${rect(6.5, mouthY + 0.2, 1, 0.2, '#e2475f', 'vc-t')}</g>${lids}</svg></div>
+    <div class="vc-dots"><i></i><i></i><i></i></div><div class="vc-shadow"></div></div>`;
+}
+
+// opts: { api, thread, botName, avatarHtml, character: { svg, color, face, glasses }, toast }
 export async function startVoice(opts) {
   if (V) return;
   if (!window.isSecureContext) return opts.toast('Voice needs the HTTPS address (port 8443)');
@@ -28,7 +41,7 @@ export async function startVoice(opts) {
   el.innerHTML = `
     <div class="voice-top"><span class="voice-name">${opts.avatarHtml || ''}<b></b></span>
       <select class="voice-mode" aria-label="Voice model">${MODES.map(([v, l]) => `<option value="${v}" ${mode() === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-    <div class="voice-orb"><span></span></div>
+    ${character(opts.character)}
     <div class="voice-state">Listening…</div>
     <div class="voice-said"></div>
     <div class="voice-btns">
@@ -50,6 +63,22 @@ export async function startVoice(opts) {
   V.keydown = (e) => { if (e.key === 'Escape') stopVoice(); };
   document.addEventListener('keydown', V.keydown);
   setState('listening');
+  // Mouth: opens with the loudness of the reply while it plays.
+  const m = el.querySelector('.vc-m'), t = el.querySelector('.vc-t'), buf = new Uint8Array(512);
+  const tick = () => {
+    if (!V || V.el !== el) return;
+    let open = 0;
+    if (V.state === 'speaking' && V.analyser) {
+      V.analyser.getByteTimeDomainData(buf);
+      let sum = 0; for (const v of buf) sum += (v - 128) ** 2;
+      open = Math.min(1, Math.sqrt(sum / buf.length) / 28);
+    }
+    V.mouth = (V.mouth || 0) * 0.5 + open * 0.5;
+    el.style.setProperty('--talk', V.mouth.toFixed(3));
+    if (m) { const h = 0.4 + V.mouth * 1.3; m.setAttribute('height', h.toFixed(2)); t.setAttribute('y', (Number(m.getAttribute('y')) + h - 0.3).toFixed(2)); t.style.opacity = V.mouth > 0.25 ? 1 : 0; }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 export function stopVoice() {
@@ -139,6 +168,7 @@ async function playNext() {
     const url = URL.createObjectURL(await r.blob());
     if (V !== v || v.state !== 'speaking') return URL.revokeObjectURL(url);
     const a = v.audio = new Audio(url);
+    try { const srcNode = v.ctx.createMediaElementSource(a), an = v.ctx.createAnalyser(); an.fftSize = 1024; srcNode.connect(an); an.connect(v.ctx.destination); v.analyser = an; } catch { v.analyser = null; }
     const done = () => { URL.revokeObjectURL(url); if (V === v && v.audio === a && v.state === 'speaking') playNext(); };
     a.onended = done; a.onerror = done;
     await a.play();
