@@ -942,3 +942,11 @@ html.embed .head { padding-left: 10px; }
 @keyframes vc-sway { 25% { transform: rotate(-5deg); } 75% { transform: rotate(5deg); } }
 @media (prefers-reduced-motion: reduce) { .vc-body { animation: none !important; } }
 .vc-mouth { opacity: 0; } .voice-view[data-state="speaking"] .vc-mouth { opacity: 1; }
+.voice-pick { display: flex; gap: 8px; } .voice-pick select { flex: 1; min-width: 0; }
+/* right-click menu */
+.ctx-menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 2px; }
+.ctx-menu .ctx-title { display: flex; align-items: center; gap: 8px; padding: 6px 10px 4px; font-size: 12px; font-weight: 700; color: var(--muted); }
+.ctx-menu .ctx-sub { margin-left: auto; color: var(--faint); font-size: 12px; padding-left: 14px; }
+.ctx-menu button span:first-of-type { flex: 1; }
+.ctx-menu button.danger { color: var(--bad); }
+.ctx-menu .ctx-gap { display: inline-block; width: 18px; }

@@ -489,8 +489,8 @@ document.addEventListener('click', (e) => {
   const g = (S.data.sideGroups || []).find((x) => x.id === h.dataset.group); if (g) { g.collapsed = !g.collapsed; saveGroups(); }
 });
 function groupModal(g) {
-  const isNew = !g;
-  g = g || { id: Math.random().toString(36).slice(2, 10), name: '', collapsed: false, keys: [] };
+  const isNew = !g || g.fresh;
+  g = g ? { ...g, fresh: undefined } : { id: Math.random().toString(36).slice(2, 10), name: '', collapsed: false, keys: [] };
   const inOther = new Map((S.data.sideGroups || []).filter((x) => x.id !== g.id).flatMap((x) => x.keys.map((k) => [k, x.name])));
   const chats = [...S.data.bots.map((b) => ['bot:' + b.id, avatar(b, 28), b.name]), ...S.data.rooms.map((r) => ['room:' + r.id, roomAvatar(r, 28), r.name])];
   const el = modal(`
@@ -600,6 +600,96 @@ document.addEventListener('touchmove', (e) => {
 document.addEventListener('touchend', dragEnd);
 document.addEventListener('touchcancel', dragEnd);
 document.addEventListener('contextmenu', (e) => { if (drag?.touch) e.preventDefault(); }); // no long-press menu while holding
+
+// ---------- right-click a bot in the sidebar ----------
+function menuAt(x, y, html) {
+  closePopover();
+  const el = document.createElement('div');
+  el.className = 'popover ctx-menu'; el.innerHTML = html;
+  document.body.append(el);
+  el.style.left = Math.max(8, Math.min(x, innerWidth - el.offsetWidth - 8)) + 'px';
+  el.style.top = Math.max(8, Math.min(y, innerHeight - el.offsetHeight - 8)) + 'px';
+  return el;
+}
+document.addEventListener('contextmenu', (e) => {
+  const item = e.target.closest('.side-list .side-item[data-key^="bot:"]');
+  if (!item || drag?.started) return;
+  e.preventDefault();
+  const b = bot(Number(item.dataset.key.slice(4))); if (!b) return;
+  const groups = S.data.sideGroups || [], inGroup = groups.find((g) => g.keys.includes('bot:' + b.id));
+  const el = menuAt(e.clientX, e.clientY, `
+    <div class="ctx-title">${avatar(b, 20)}<span>${esc(b.name)}</span></div>
+    <button data-bm="pane">${ICON.split}<span>Open in a new pane</span></button>
+    <button data-bm="thread">${ICON.compose}<span>New thread</span></button>
+    <button data-bm="project">${ICON.folder}<span>New project</span></button>
+    <hr>
+    <button data-bm="rename">${ICON.compose}<span>Rename…</span></button>
+    <button data-bm="move">${ICON.grid}<span>Move to group</span><span class="ctx-sub">${esc(inGroup ? inGroup.name : 'None')} ›</span></button>
+    <button data-bm="settings">${ICON.gear}<span>Bot settings</span></button>
+    <hr>
+    <button data-bm="delete" class="danger">${ICON.close}<span>Delete bot…</span></button>`);
+  el.addEventListener('click', (ev) => {
+    const a = ev.target.closest('[data-bm]')?.dataset.bm; if (!a) return;
+    ev.stopPropagation();
+    if (a === 'move') return moveMenu(b, el.getBoundingClientRect());
+    closePopover();
+    if (a === 'pane') return paneCmd('split-right', { key: 'bot:' + b.id });
+    if (a === 'thread') return newThread(b.id);
+    if (a === 'project') return projectModal(null, { ownerBotId: b.id });
+    if (a === 'rename') return renameBot(b);
+    if (a === 'settings') return botModal(b);
+    if (a === 'delete') return deleteBot(b);
+  });
+});
+// Move to group: pick a group, take it out of its group, or make a new group for it.
+function moveMenu(b, r) {
+  const key = 'bot:' + b.id, groups = S.data.sideGroups || [], cur = groups.find((g) => g.keys.includes(key));
+  const el = menuAt(r.right - 4, r.top, `<div class="ctx-title"><span>Move ${esc(b.name)} to…</span></div>
+    ${groups.map((g) => `<button data-mg="${g.id}">${g === cur ? ICON.check : '<i class="ctx-gap"></i>'}<span>${esc(g.name)}</span></button>`).join('')}
+    ${groups.length ? '<hr>' : ''}
+    ${cur ? `<button data-mg="">${'<i class="ctx-gap"></i>'}<span>No group (top of the list)</span></button>` : ''}
+    <button data-mg="new">${ICON.plus}<span>New group…</span></button>`);
+  el.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-mg]'); if (!btn) return;
+    ev.stopPropagation(); closePopover();
+    const id = btn.dataset.mg;
+    if (id === 'new') return groupModal({ id: Math.random().toString(36).slice(2, 10), name: '', collapsed: false, keys: [key], fresh: true });
+    S.data.sideGroups = groups.map((g) => ({ ...g, keys: g.id === id ? [...g.keys.filter((k) => k !== key), key] : g.keys.filter((k) => k !== key) }));
+    saveGroups();
+  });
+}
+function renameBot(b) {
+  const el = modal(`<div class="modal-head"><h2>Rename bot</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <label class="field">New name<input id="rn-name" value="${esc(b.name)}" maxlength="60"></label>
+    <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="rn-save">Rename</button></div>`);
+  const input = $('#rn-name', el); setTimeout(() => input.select(), 40);
+  const save = async () => {
+    const name = input.value.trim(); if (!name) return toast('Give the bot a name');
+    try { await api(`/api/bots/${b.id}`, { method: 'PATCH', body: { name } }); closeModal(); await refreshState(); renderSide(); if (S.current?.id === b.id) renderMain(); } catch (err) { toast(err.message); }
+  };
+  $('#rn-save', el).onclick = save;
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+}
+// Delete takes two steps: confirm what it means, then type the bot's name.
+function deleteBot(b) {
+  const el = modal(`<div class="modal-head"><h2>Delete ${esc(b.name)}?</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <div id="del-step1"><p>This removes the bot, its routines and its place in group chats. Its past messages stay saved, but you can't talk to it again.</p>
+      <div class="modal-foot"><button class="btn" data-close>Keep bot</button><button class="btn danger" id="del-next">Yes, continue</button></div></div>
+    <div id="del-step2" hidden><p>To confirm, type the bot's name: <b>${esc(b.name)}</b></p>
+      <label class="field"><input id="del-name" autocomplete="off" placeholder="${esc(b.name)}"></label>
+      <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn danger" id="del-go" disabled>Delete forever</button></div></div>`);
+  const input = $('#del-name', el), go = $('#del-go', el);
+  $('#del-next', el).onclick = () => { $('#del-step1', el).hidden = true; $('#del-step2', el).hidden = false; input.focus(); };
+  input.addEventListener('input', () => { go.disabled = input.value.trim() !== b.name.trim(); });
+  go.onclick = async () => {
+    if (go.disabled) return;
+    try {
+      await api(`/api/bots/${b.id}`, { method: 'DELETE' }); closeModal();
+      if (S.current?.id === b.id) { S.current = null; history.replaceState(null, '', '#'); }
+      await refreshState(); renderSide(); renderMain(); toast(`${b.name} was deleted`);
+    } catch (err) { toast(err.message); }
+  };
+}
 
 // ---------- activity drawer ----------
 function renderAside() {
@@ -1425,6 +1515,20 @@ document.addEventListener('click', async (e) => {
   if (e.target.closest('[data-ctx-compact]') && infoBot) await api(`/api/threads/${encodeURIComponent('bot:' + infoBot)}/messages`, { method: 'POST', body: { text: '/compact' } });
 });
 
+// Plays a short sample of a voice (bot settings → Voice → Preview).
+let previewAudio = null;
+async function previewVoice(voice, name, btn) {
+  previewAudio?.pause();
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await fetch('/api/speak', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voice, text: `Hi, I'm ${name || 'your new bot'}. This is how I'll sound when I read replies and talk with you.` }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Preview failed');
+    const url = URL.createObjectURL(await r.blob());
+    previewAudio = new Audio(url); previewAudio.onended = () => URL.revokeObjectURL(url);
+    await previewAudio.play();
+  } catch (err) { toast(err.message); }
+  finally { btn.disabled = false; btn.textContent = '▶ Preview'; }
+}
 function botModal(b) {
   const isNew = !b;
   b = b || { name: '', role: '', instructions: '', color: BOT_COLORS[S.data.bots.length % BOT_COLORS.length], shape: 'none/none', effort: 'medium', model: '',
@@ -1448,6 +1552,7 @@ function botModal(b) {
       <label class="field">Effort<select id="f-effort">${EFFORTS.map(([v, l]) => `<option value="${v}" ${b.effort === v ? 'selected' : ''}>${l}</option>`).join('')}</select><span class="hint">Lower effort uses less of your plan.</span></label>
       <label class="field">Model<select id="f-model"><option value="">Default</option>${b.model ? `<option value="${esc(b.model)}" selected>${esc(b.model)}</option>` : ''}</select><span class="hint" id="f-model-hint">Loading models on your plan…</span></label>
     </div>
+    <div class="field">Voice<div class="voice-pick"><select id="f-voice"><option value="">Loading voices…</option></select><button type="button" class="btn small" id="f-voice-play">▶ Preview</button></div><span class="hint">Used for read aloud and voice chat.</span></div>
     <label class="toggle-row"><span class="p-icon" style="width:34px;height:34px;background:#2a3a6b">${ICON.monitor}</span>
       <span class="m-text"><b>Own computer</b><span>${S.data.computers ? 'Works on its own desktop on your computer VM, with its own browser and sign-ins.' : 'Set up the computer VM first in Server settings (see deploy/computer/README.md).'}</span></span>
       <input type="checkbox" class="switch" id="f-computer" ${b.computer ? 'checked' : ''} ${S.data.computers ? '' : 'disabled'}></label>
@@ -1502,9 +1607,8 @@ function botModal(b) {
       setColor(any(BOT_COLORS));
     }
     if (e.target.closest('[data-close]')) closeModal();
-    if (e.target.id === 'f-del' && confirm(`Delete ${b.name}? Its chat history stays in the database, but the bot is gone.`)) {
-      await api(`/api/bots/${b.id}`, { method: 'DELETE' }); closeModal(); S.current = null; history.replaceState(null, '', '#'); await refreshState(); renderMain();
-    }
+    if (e.target.id === 'f-del') return deleteBot(b);
+    if (e.target.id === 'f-voice-play') return previewVoice($('#f-voice', el).value, $('#f-name', el).value.trim(), e.target);
     if (e.target.id === 'f-save') {
       const lines = (id) => $(id, el).value.split('\n').map((s) => s.trim()).filter(Boolean);
       const payload = { name: $('#f-name', el).value.trim(), role: $('#f-role', el).value.trim(), instructions: $('#f-instr', el).value, color, shape: lookShape(look),
@@ -1512,11 +1616,17 @@ function botModal(b) {
       if (!payload.name) return toast('Give the bot a name');
       try {
         const saved = isNew ? await api('/api/bots', { method: 'POST', body: payload }) : await api(`/api/bots/${b.id}`, { method: 'PATCH', body: payload });
+        const v = $('#f-voice', el).value;
+        if (v !== (el.dataset.voice || '')) await api(`/api/bots/${saved.id}/voice`, { method: 'PUT', body: { voice: v } });
         closeModal(); await refreshState(); openThread('bot:' + saved.id);
       } catch (err) { toast(err.message); }
     }
   });
   drawPicks();
+  api('/api/voices').then(({ voices, default: def, byBot }) => {
+    const cur = el.dataset.voice = (!isNew && byBot[b.id]) || '';
+    $('#f-voice', el).innerHTML = `<option value="">Default (${esc(voices.find((v) => v.id === def)?.name || 'standard')})</option>` + [...new Set(voices.map((v) => v.group))].map((grp) => `<optgroup label="${esc(grp)}">` + voices.filter((v) => v.group === grp && v.id !== def).map((v) => `<option value="${esc(v.id)}" ${v.id === cur ? 'selected' : ''}>${esc(v.name)}</option>`).join('') + '</optgroup>').join('');
+  }).catch(() => { $('#f-voice', el).innerHTML = '<option value="">Default</option>'; });
 }
 
 function roomModal(r) {

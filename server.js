@@ -978,14 +978,70 @@ const PIPER_VOICE = process.env.NIMBUS_PIPER_VOICE || path.join(os.homedir(), 'o
 // Markdown and links read badly, so speak plain text.
 const speakable = (t) => String(t || '').replace(/```[\s\S]*?```/g, ' (code omitted) ').replace(/`([^`]+)`/g, '$1')
   .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/https?:\/\/\S+/g, 'a link').replace(/[*_#>|]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 6000);
+// Kokoro: natural-sounding voices, run as a local service (bin/kokoro-server.py) that keeps the model loaded.
+const KOKORO_PY = process.env.NIMBUS_KOKORO_PY || path.join(os.homedir(), 'opt/kokoro-py/bin/python');
+const KOKORO_DIR = process.env.NIMBUS_KOKORO_DIR || path.join(os.homedir(), 'opt/kokoro');
+const KOKORO_PORT = Number(process.env.NIMBUS_KOKORO_PORT || 8179);
+let kokoroProc = null, kokoroFails = 0;
+function startKokoro() {
+  const model = path.join(KOKORO_DIR, 'kokoro-v1.0.onnx'), voices = path.join(KOKORO_DIR, 'voices-v1.0.bin');
+  if (!fs.existsSync(KOKORO_PY) || !fs.existsSync(model) || !fs.existsSync(voices)) return;
+  kokoroProc = spawn(KOKORO_PY, ['-I', path.join(HERE, 'bin/kokoro-server.py'), model, voices, String(KOKORO_PORT)], { stdio: 'ignore' });
+  kokoroProc.on('exit', () => { kokoroProc = null; if (++kokoroFails <= 5) setTimeout(startKokoro, 5000 * kokoroFails); });
+  setTimeout(() => { kokoroFails = 0; }, 60_000).unref();
+}
+startKokoro();
+process.on('exit', () => kokoroProc?.kill());
+const KOKORO_VOICES = { af_heart: 'Heart', af_bella: 'Bella', af_nicole: 'Nicole', af_sarah: 'Sarah', af_sky: 'Sky', af_nova: 'Nova', af_jessica: 'Jessica', af_river: 'River', af_aoede: 'Aoede', af_kore: 'Kore', af_alloy: 'Alloy',
+  am_michael: 'Michael', am_adam: 'Adam', am_eric: 'Eric', am_liam: 'Liam', am_onyx: 'Onyx', am_echo: 'Echo', am_fenrir: 'Fenrir', am_puck: 'Puck',
+  bf_emma: 'Emma', bf_isabella: 'Isabella', bf_alice: 'Alice', bf_lily: 'Lily', bm_george: 'George', bm_daniel: 'Daniel', bm_lewis: 'Lewis', bm_fable: 'Fable' };
+const kokoroVoices = () => kokoroProc ? Object.entries(KOKORO_VOICES).map(([v, n]) => ({ id: 'kokoro:' + v, name: `${n} (${v[0] === 'a' ? 'American' : 'British'} ${v[1] === 'f' ? 'woman' : 'man'})`, group: 'Natural (Kokoro)' })) : [];
+
+// Voices: every Piper model in the voices folder; each bot can pick one (setting bot_voices = { botId: voiceId }).
+const VOICE_DIR = path.dirname(PIPER_VOICE);
+const ACCENT = { en_US: 'American', en_GB: 'British' };
+function listVoices() {
+  try {
+    return fs.readdirSync(VOICE_DIR).filter((f) => f.endsWith('.onnx')).map((f) => {
+      const id = f.slice(0, -5), [lang, who = '', quality = ''] = id.split('-');
+      const name = who.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).replace(/^Hfc /, 'HFC ');
+      return { id, name: `${name} (${ACCENT[lang] || lang}${quality === 'high' ? ', high quality' : ''})`, lang, group: 'Basic (Piper)' };
+    }).sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
+  } catch { return []; }
+}
+function allVoices() { return [...kokoroVoices(), ...listVoices()];
+}
+const botVoices = () => JSON.parse(getSetting('bot_voices') || '{}');
+function voiceFile(id) {
+  const f = path.join(VOICE_DIR, String(id || '').replace(/[^\w.-]/g, '') + '.onnx');
+  return id && fs.existsSync(f) ? f : PIPER_VOICE;
+}
+route('GET', '/api/voices', (req, res) => json(res, 200, { voices: allVoices(), default: path.basename(PIPER_VOICE, '.onnx'), byBot: botVoices() }));
+route('PUT', '/api/bots/:id/voice', async (req, res, p) => {
+  const { voice } = await body(req);
+  const all = botVoices();
+  if (voice && allVoices().some((v) => v.id === voice)) all[Number(p.id)] = voice; else delete all[Number(p.id)];
+  setSetting('bot_voices', JSON.stringify(all));
+  json(res, 200, { ok: true });
+});
 route('GET', '/api/speak', (req, res) => json(res, 200, { available: fs.existsSync(PIPER_BIN) && fs.existsSync(PIPER_VOICE) }));
 route('POST', '/api/speak', async (req, res) => {
   if (!fs.existsSync(PIPER_BIN) || !fs.existsSync(PIPER_VOICE)) return json(res, 503, { error: 'Read-aloud isn’t installed on the server' });
-  const { messageId, text } = await body(req);
-  const src = messageId ? q('SELECT body FROM messages WHERE id=?').get(Number(messageId))?.body : text;
+  const { messageId, text, voice, botId } = await body(req);
+  const row = messageId ? q('SELECT body, author FROM messages WHERE id=?').get(Number(messageId)) : null;
+  const src = row ? row.body : text;
+  // Preview passes a voice; otherwise the bot who wrote the message (or the bot asked for) speaks in its own voice.
+  const chosen = voice || botVoices()[Number(botId || row?.author)];
   const say = speakable(src);
   if (!say) return json(res, 400, { error: 'Nothing to read' });
-  const p = spawn(PIPER_BIN, ['--model', PIPER_VOICE, '--output_file', '-'], { stdio: ['pipe', 'pipe', 'ignore'] });
+  if (String(chosen).startsWith('kokoro:') && kokoroProc) {
+    try {
+      const r = await fetch(`http://127.0.0.1:${KOKORO_PORT}/`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: say, voice: chosen.slice(7) }), signal: AbortSignal.timeout(120_000) });
+      if (r.ok) { const wav = Buffer.from(await r.arrayBuffer()); res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': wav.length, 'cache-control': 'no-store' }); return res.end(wav); }
+    } catch {} // Kokoro is still loading or failed: fall back to Piper below
+  }
+  const model = voiceFile(String(chosen || '').startsWith('kokoro:') ? '' : chosen);
+  const p = spawn(PIPER_BIN, ['--model', model, '--output_file', '-'], { stdio: ['pipe', 'pipe', 'ignore'] });
   const chunks = [];
   p.stdout.on('data', (c) => chunks.push(c));
   p.on('error', (e) => { if (!res.headersSent) json(res, 500, { error: e.message }); });
