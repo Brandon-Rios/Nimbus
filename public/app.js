@@ -3,6 +3,9 @@ import { attachAutocorrect } from './autocorrect.js';
 import { THEMES, resolveTheme, applyThemeVars } from './themes.js';
 import { startRecording, stopRecording, cancelRecording, isRecording, browserDictation } from './dictation.js';
 const $ = (s, el = document) => el.querySelector(s);
+// Split panes: an extra pane is this same app in a frame (?pane=<id>), showing one chat without the sidebar.
+const EMBED = new URLSearchParams(location.search).get('pane') || '';
+if (EMBED) document.documentElement.classList.add('embed');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const EFFORTS = [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']];
 const BOT_COLORS = ['#f4f6ff', '#c7e3ff', '#d9d1ff', '#ffd3e0', '#ffe6a8', '#c9f2d8', '#ffcfb0', '#8fb8ff', '#b39dff', '#ff9fb5', '#7fd6c2', '#9aa3ad',
@@ -17,6 +20,9 @@ const ICON = {
   grid: svg('<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>'),
   clock: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
   book: svg('<path d="M5 4.5h10a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10"/>'),
+  back: svg('<path d="m15 18-6-6 6-6"/>'),
+  fwd: svg('<path d="m9 18 6-6-6-6"/>'),
+  reload: svg('<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>'),
   plug: svg('<path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/>'),
   gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3.9a7 7 0 0 0-2-1.2L14.2 3h-4l-.4 2.6a7 7 0 0 0-2 1.2l-2.4-.9-2 3.4 2 1.5a7 7 0 0 0 0 2.4l-2 1.5 2 3.4 2.4-.9a7 7 0 0 0 2 1.2l.4 2.6h4l.4-2.6a7 7 0 0 0 2-1.2l2.3.9 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z"/>'),
   globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'),
@@ -33,6 +39,8 @@ const ICON = {
   chevron: svg('<path d="m9 6 6 6-6 6"/>', 14),
   mic: svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'),
   clip: svg('<path d="m20 11.5-8.3 8.3a5 5 0 0 1-7-7l8.8-8.8a3.3 3.3 0 0 1 4.7 4.7l-8.8 8.8a1.7 1.7 0 0 1-2.4-2.4l8.1-8.1"/>'),
+  keyboard: svg('<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>'),
+  split: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>'),
   monitor: svg('<rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/>')
 };
 
@@ -73,7 +81,19 @@ document.addEventListener('click', (e) => {
   download(a.href, a.getAttribute('download') || undefined);
   a.closest('.doc-menu')?.remove();
 });
-function copyText(text) { navigator.clipboard?.writeText(text).then(() => toast('Link copied'), () => toast(text)); }
+// Copy to the clipboard. navigator.clipboard only exists on HTTPS (and localhost), so over plain http
+// fall back to the old copy command on a hidden text box. Resolves true if it copied.
+async function clip(text) {
+  try { if (navigator.clipboard && isSecureContext) { await navigator.clipboard.writeText(text); return true; } } catch {}
+  const ta = Object.assign(document.createElement('textarea'), { value: text, readOnly: true });
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+  const prev = document.activeElement;
+  document.body.append(ta); ta.select();
+  let ok = false; try { ok = document.execCommand('copy'); } catch {}
+  ta.remove(); prev?.focus?.({ preventScroll: true });
+  return ok;
+}
+function copyText(text) { clip(text).then((ok) => toast(ok ? 'Link copied' : text)); }
 function toast(text) {
   const t = document.createElement('div');
   t.className = 'toast'; t.textContent = text;
@@ -421,7 +441,7 @@ function renderSide() {
     <div class="side-top">
       <label class="search">${ICON.search}<input id="side-search" placeholder="Search" value="${esc(sideQuery)}" autocomplete="off"></label>
       <button class="icon-btn" data-act="new-menu" aria-label="New">${ICON.plus}</button>
-      <button class="icon-btn side-collapse" data-act="side-collapse" aria-label="Collapse sidebar" title="Collapse sidebar (Ctrl+B)">${ICON.sidebar}</button>
+      <button class="icon-btn side-collapse" data-act="side-collapse" aria-label="Collapse sidebar" title="Collapse sidebar (${esc(kbLabel(kbGet('sidebar')))})">${ICON.sidebar}</button>
     </div>
     <div class="side-list">
       ${items.length ? items.map((it) => `
@@ -442,6 +462,7 @@ function renderSide() {
       ${pending ? `<button class="foot-item" data-act="panel">${ICON.bell}<span>Approvals</span><span class="badge">${pending}</span></button>` : ''}
       <button class="foot-item" data-act="market">${ICON.grid}<span>Connectors</span></button>
       <button class="foot-item" data-act="cc-plugins">${ICON.plug}<span>Plugins &amp; skills</span></button>
+      <button class="foot-item" data-act="shortcuts" title="Keyboard shortcuts (${esc(kbLabel(kbGet('shortcuts')))})">${ICON.keyboard}<span>Keyboard shortcuts</span></button>
       <button class="foot-item user" data-act="user-menu"><span class="initial">${esc(userName()[0])}</span><span>${esc(userName())}</span></button>
     </div>`;
 }
@@ -660,7 +681,9 @@ function renderMain() {
   const main = $('#main');
   if (!S.current) {
     const none = !S.data.bots.length;
-    main.innerHTML = `<header class="head"><button class="icon-btn menu-btn" data-act="menu" aria-label="Menu">${ICON.menu}</button></header>
+    if (EMBED) { main.innerHTML = `<header class="head"><b class="pane-pick-title">Pick a chat for this pane</b><div class="actions">${paneBtns()}</div></header>
+      <div class="thread"><div class="pane-pick">${pickList()}</div></div>`; return; }
+    main.innerHTML = `<header class="head"><button class="icon-btn menu-btn" data-act="menu" aria-label="Menu">${ICON.menu}</button><div class="actions" style="margin-left:auto">${paneBtns()}</div></header>
       <div class="thread"><div class="empty">
         <img class="logo-art" src="/nimbus.webp" alt="Nimbus" width="160" height="160">
         <h2>${none ? 'Build your team' : 'Pick a bot to talk to'}</h2>
@@ -685,12 +708,14 @@ function renderMain() {
       </button>
       ${isBot ? `<button class="th-crumb" data-act="thread-menu" title="Thread options">${crumbHtml()}</button>` : ''}
       <div class="actions">
+        ${paneBtns()}
         ${isBot ? `
           <label class="effort" title="Effort: higher is smarter but uses more of your plan">
             <button class="effort-btn" data-act="effort-menu" aria-label="Effort" aria-haspopup="menu">${esc(EFFORTS.find(([v]) => v === b.effort)?.[1] || 'Medium')}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m6 9 6 6 6-6"/></svg></button>
           </label>
           <button class="icon-btn" data-act="routines" title="Routines" aria-label="Routines">${ICON.clock}${nRoutines ? `<i class="count">${nRoutines}</i>` : ''}</button>
           ${b.computer && S.data.computers ? `<button class="icon-btn" data-act="computer" title="${esc(b.name)}’s computer" aria-label="Computer">${ICON.monitor}</button>` : ''}
+          ${b.computer && S.data.computers ? '' : `<button class="icon-btn" data-act="browser" title="Browser: watch and use this bot’s browser" aria-label="Browser">${ICON.globe}</button>`}
           <button class="icon-btn" data-act="plugins" title="Plugins" aria-label="Plugins">${ICON.plug}${b.plugins.length ? `<i class="count">${b.plugins.length}</i>` : ''}</button>
           <button class="icon-btn" data-act="memory" title="Memory" aria-label="Memory">${ICON.book}</button>
           <button class="icon-btn" data-act="new-thread" title="New thread" aria-label="New thread">${ICON.compose}</button>
@@ -797,7 +822,7 @@ document.addEventListener('contextmenu', (e) => {
     const b = ev.target.closest('button'); if (!b) return;
     closePopover();
     const m = S.messages.find((x) => x.id === id);
-    if (b.dataset.copyMsg !== undefined) { await navigator.clipboard?.writeText(m?.body || '').catch(() => {}); return toast('Copied'); }
+    if (b.dataset.copyMsg !== undefined) { return toast(await clip(m?.body || '') ? 'Copied' : 'Couldn’t copy'); }
     const text = b.dataset.redactSel !== undefined ? sel : '';
     if (!confirm(text ? `Replace “${text.slice(0, 80)}” with [REDACTED] everywhere Nimbus stored it?` : 'Replace this whole message with [REDACTED]? It’s also removed from saved prompts and bot transcripts.')) return;
     try {
@@ -1051,7 +1076,10 @@ async function openThread(key) {
   const prev = threadKey();
   if (prev) sessionDraft.set(prev, $('#msg')?.value || '');
   S.current = { type, id: Number(id), ...(thread ? { thread } : {}) };
+  // The browser pane follows the chat: switching bots shows the new bot's own browser.
+  if (BR.bot && !(type === 'bot' && Number(id) === BR.bot)) { if (type === 'bot') openBrowser(Number(id)); else closeDoc(); }
   history.replaceState(null, '', '#' + key);
+  if (EMBED) parent.postMessage({ nimbusPane: 'key', id: EMBED, key }, location.origin); else paneMainKey(key);
   if (infoBot) { if (type === 'bot') { if (infoBot !== Number(id)) { $('#info').innerHTML = ''; openInfo({ id: Number(id) }); } } else closeInfo(); }
   S.loadingThread = true; S.messages = [];
   $('#side').classList.remove('open'); $('#aside').classList.remove('open');
@@ -1153,6 +1181,7 @@ setInterval(() => { // tick live timers and rotate phrases in place, so animatio
 }, 1000);
 
 function notify(m) {
+  if (EMBED) return; // the main window notifies
   if (!('Notification' in window) || Notification.permission !== 'granted' || document.visibilityState === 'visible') return;
   const a = JSON.parse(m.body);
   const n = new Notification(`${bot(m.author)?.name || 'A bot'} needs approval`, { body: describeTool(a.tool, a.input), icon: '/icon.svg', tag: 'approval-' + a.approvalId });
@@ -1945,7 +1974,7 @@ async function mfaModal() {
         <pre class="codes">${recovery.map(esc).join('\n')}</pre>
         <div class="modal-foot"><button class="btn" id="mf-copy">Copy</button><button class="btn primary" data-close>I saved them</button></div>`, { sticky: true });
       done.addEventListener('click', (ev) => {
-        if (ev.target.id === 'mf-copy') navigator.clipboard?.writeText(recovery.join('\n')).then(() => toast('Copied'), () => toast('Copy failed; select and copy them instead'));
+        if (ev.target.id === 'mf-copy') clip(recovery.join('\n')).then((ok) => toast(ok ? 'Copied' : 'Copy failed; select and copy them instead'));
         if (ev.target.closest('[data-close]')) closeModal();
       });
     } catch (err) { toast(err.message); }
@@ -2213,7 +2242,7 @@ function closeDoc() {
   ART.open = false; $('#docpane').onclick = null;
   if (V.dirty && $('#docpane .html-frame.editing') && !confirm('Discard unsaved HTML changes?')) return;
   if (DOC.id && DOC.dirty) docFlush();
-  V.code = V.dirty = false; if (ED.ed) stopEditor();
+  V.code = V.dirty = false; if (ED.ed) stopEditor(); stopBrowserView();
   V.doc = null; V.fileId = null; DOC.id = null; DOC.d = null; DOC.editing = null; DOC.dirty = false;
   $('#docpane').classList.remove('open', 'wide');
 }
@@ -2661,7 +2690,7 @@ document.addEventListener('click', async (e) => {
   }
   if (t.closest('#modal-root')) return;
   const cur = S.current?.type === 'bot' ? bot(S.current.id) : null;
-  if (t.dataset.open) return openThread(t.dataset.open);
+  if (t.dataset.open) return paneOpen(t.dataset.open);
   if (t.dataset.projToggle) { const k = 'p' + t.dataset.projToggle; sideOpen[k] = !t.classList.contains('open'); saveSideOpen(); return renderSide(); }
   if (t.dataset.archToggle) { sideOpen['a' + t.dataset.archToggle] = !sideOpen['a' + t.dataset.archToggle]; saveSideOpen(); return renderSide(); }
   if (t.dataset.newThread) return newThread(Number(t.dataset.newThread));
@@ -2698,7 +2727,7 @@ document.addEventListener('click', async (e) => {
     ta.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') undo(); if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); save(); } });
     return;
   }
-  if (t.dataset.copy) { const m = S.messages.find((x) => x.id === Number(t.dataset.copy)); await navigator.clipboard?.writeText(m?.body || '').catch(() => {}); buzz(6); return toast('Copied'); }
+  if (t.dataset.copy) { const m = S.messages.find((x) => x.id === Number(t.dataset.copy)); const ok = await clip(m?.body || ''); buzz(6); return toast(ok ? 'Copied' : 'Couldn’t copy'); }
   if (t.dataset.edit) { const m = S.messages.find((x) => x.id === Number(t.dataset.edit)); const ta = $('#msg'); if (ta && m) { ta.value = m.body; autosize(ta); ta.focus(); } return; }
   if (t.dataset.retry) { const m = S.messages.find((x) => x.id === Number(t.dataset.retry)); if (m) await api(`/api/threads/${encodeURIComponent(threadKey())}/messages`, { method: 'POST', body: { text: m.body } }); return; }
   if (t.dataset.continue) { await api(`/api/threads/${encodeURIComponent(threadKey())}/messages`, { method: 'POST', body: { text: t.textContent === 'Try again' ? 'That failed. Please try again.' : 'Continue.' } }); return; }
@@ -2773,7 +2802,9 @@ document.addEventListener('click', async (e) => {
     }
     case 'menu': e.stopPropagation(); if (innerWidth > 760) return setSideCollapsed(false); return $('#side').classList.toggle('open');
     case 'side-collapse': return setSideCollapsed(true);
+    case 'shortcuts': return EMBED ? paneCmd('shortcuts') : shortcutsModal();
     case 'panel': e.stopPropagation(); $('#side').classList.remove('open'); closeInfo(); return $('#aside').classList.toggle('open');
+    case 'browser': return BR.bot === S.current.id ? closeDoc() : openBrowser(S.current.id);
     case 'info': e.stopPropagation(); return infoBot === cur?.id && $('#info').classList.contains('open') ? closeInfo() : cur && openInfo(cur);
     case 'logout': await api('/api/logout', { method: 'POST' }); location.href = '/login'; return;
     case 'notify':
@@ -3086,10 +3117,12 @@ applyTheme();
   const hash = location.hash.slice(1);
   const first = Object.entries(S.data.last).sort((a, b) => b[1].at - a[1].at)[0]?.[0];
   if (/^(bot|room|t):\d+$/.test(hash)) openThread(hash);
+  else if (EMBED) renderMain();
   else if (/^doc:d_[0-9a-f]+$/.test(hash)) { if (first || S.data.bots[0]) await openThread(first || 'bot:' + S.data.bots[0].id); openDoc(hash.slice(4)); }
   else if (matchMedia('(min-width: 761px)').matches && (first || S.data.bots[0])) openThread(first || 'bot:' + S.data.bots[0].id);
   else renderMain();
   connect();
+  if (!EMBED) panesRestore();
 })();
 
 // ---------- sidebar size: drag its edge (200–520px, double-click resets), collapse with its button or Ctrl+B ----------
@@ -3109,5 +3142,326 @@ function setSideCollapsed(on) { document.body.classList.toggle('side-collapsed',
     h.addEventListener('pointermove', move); h.addEventListener('pointerup', up);
   });
   h.addEventListener('dblclick', () => { root.style.removeProperty('--side-w'); delete localStorage.sideW; });
-  addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b' && innerWidth > 760 && !e.target.closest('[contenteditable="true"]')) { e.preventDefault(); setSideCollapsed(!document.body.classList.contains('side-collapsed')); } });
 })();
+
+// ---------- Bot browser: live preview, like Claude Code desktop ----------
+// The bot's own browser (the Browser plugin drives it) streams into the side pane. You can watch it work,
+// type an address or a search, and click, scroll and type into the page yourself (e.g. to sign in).
+const BR = { bot: null, es: null, ro: null, fitted: false, w: 1280, h: 800, typing: false };
+function stopBrowserView() { BR.es?.close(); BR.es = null; BR.bot = null; BR.ro?.disconnect(); BR.ro = null; }
+function openBrowser(botId) {
+  closeDoc(); closeInfo(); $('#aside').classList.remove('open');
+  const b = S.data.bots.find((x) => x.id === botId);
+  const el = $('#docpane');
+  el.classList.add('open', 'wide');
+  el.innerHTML = `<header class="viewer-head">
+      <div class="viewer-title">${ICON.globe}<b data-br-title>${esc(b?.name || 'Bot')}’s browser</b></div>
+      <button class="icon-btn" data-br="close" aria-label="Close browser">${ICON.close}</button>
+    </header>
+    <form class="br-bar" data-br-form>
+      <button type="button" class="icon-btn" data-br="back" aria-label="Back">${ICON.back}</button>
+      <button type="button" class="icon-btn" data-br="forward" aria-label="Forward">${ICON.fwd}</button>
+      <button type="button" class="icon-btn" data-br="reload" aria-label="Reload">${ICON.reload}</button>
+      <input class="br-url" name="url" placeholder="Search or enter address" aria-label="Search or enter address" autocomplete="off" spellcheck="false">
+    </form>
+    <div class="viewer-body br-body"><img class="br-screen" alt="Live view of the bot’s browser" tabindex="0" hidden><div class="viewer-wait br-wait">Starting the browser…</div></div>
+    ${b?.plugins?.includes('browser') ? '' : `<div class="br-note">${ICON.plug} Turn on the <b>Browser</b> plugin for ${esc(b?.name || 'this bot')} so it can use this browser too.</div>`}`;
+  BR.bot = botId; BR.fitted = false;
+  const es = BR.es = new EventSource(`/api/bots/${botId}/browser/stream`);
+  const img = $('.br-screen', el), url = $('.br-url', el);
+  // Size the page to the pane, so it fills it at the right scale (and again when the pane or window resizes).
+  let rt = null;
+  const fit = () => { const r = $('.br-body', el).getBoundingClientRect(); if (r.width > 50 && r.height > 50) BR.bot && api(`/api/bots/${BR.bot}/browser`, { method: 'POST', body: { action: 'resize', w: r.width, h: r.height, dpr: devicePixelRatio || 1 } }).catch(() => {}); };
+  BR.ro = new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(fit, 150); });
+  BR.ro.observe($('.br-body', el));
+  es.onmessage = (e) => {
+    if (BR.es !== es) return;
+    const ev = JSON.parse(e.data);
+    if (ev.type === 'info' && !BR.fitted) { BR.fitted = true; fit(); }
+    if (ev.type === 'frame') { img.src = 'data:image/jpeg;base64,' + ev.data; BR.w = ev.w; BR.h = ev.h; img.hidden = false; $('.br-wait', el)?.remove(); }
+    else if (ev.type === 'info') { if (document.activeElement !== url) url.value = ev.url === 'about:blank' ? '' : ev.url; $('[data-br-title]', el).textContent = ev.title && ev.url !== 'about:blank' ? ev.title : `${b?.name || 'Bot'}’s browser`; }
+    else if (ev.type === 'error' || ev.type === 'closed') { es.close(); const w = $('.br-wait', el) || $('.br-body', el).appendChild(Object.assign(document.createElement('div'), { className: 'viewer-wait br-wait' })); w.textContent = ev.error || 'The browser closed.'; }
+  };
+}
+const brSend = (body) => BR.bot && api(`/api/bots/${BR.bot}/browser`, { method: 'POST', body }).catch((e) => toast(e.message));
+// Pane coordinates → page coordinates.
+function brPoint(e, img) { const r = img.getBoundingClientRect(); return { x: Math.round((e.clientX - r.left) * BR.w / r.width), y: Math.round((e.clientY - r.top) * BR.h / r.height) }; }
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('[data-br]');
+  if (a) return a.dataset.br === 'close' ? closeDoc() : brSend({ action: a.dataset.br });
+
+});
+document.addEventListener('submit', (e) => {
+  if (!e.target.matches('[data-br-form]')) return;
+  e.preventDefault();
+  const u = e.target.url.value.trim(); if (!u) return;
+  e.target.url.blur(); brSend({ action: 'navigate', url: u });
+});
+let brWheel = null;
+document.addEventListener('wheel', (e) => {
+  if (!e.target.matches?.('.br-screen')) return;
+  e.preventDefault();
+  if (brWheel) { brWheel.dx += e.deltaX; brWheel.dy += e.deltaY; return; }
+  brWheel = { ...brPoint(e, e.target), dx: e.deltaX, dy: e.deltaY };
+  setTimeout(() => { brSend({ action: 'scroll', ...brWheel }); brWheel = null; }, 60);
+}, { passive: false });
+document.addEventListener('keydown', (e) => {
+  if (!e.target.matches?.('.br-screen')) return;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && /^[acx]$/i.test(e.key)) {
+    e.preventDefault();
+    const k = e.key.toLowerCase();
+    if (k === 'a') return brSend({ action: 'selectall' });
+    return BR.bot && api(`/api/bots/${BR.bot}/browser`, { method: 'POST', body: { action: k === 'c' ? 'copy' : 'cut' } })
+      .then((r) => r.text ? clip(r.text).then((ok) => toast(ok ? 'Copied' : 'Your browser blocked the clipboard')) : toast('Nothing selected'))
+      .catch((err) => toast(err.message));
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  e.preventDefault();
+  brSend(e.key.length === 1 ? { action: 'text', text: e.key } : { action: 'key', key: e.key });
+});
+// Paste into the page.
+document.addEventListener('paste', (e) => { if (e.target.matches?.('.br-screen')) { e.preventDefault(); brSend({ action: 'text', text: e.clipboardData.getData('text') }); } });
+
+// Press, drag and release in the pane: clicks, and drag to select text (moves are throttled).
+let brDrag = null;
+document.addEventListener('pointerdown', (e) => {
+  if (!e.target.matches?.('.br-screen') || e.button !== 0) return;
+  e.preventDefault(); e.target.focus(); e.target.setPointerCapture(e.pointerId);
+  brDrag = { img: e.target, t: 0 };
+  brSend({ action: 'mouse', type: 'down', ...brPoint(e, e.target) });
+});
+document.addEventListener('pointermove', (e) => {
+  if (!brDrag || Date.now() - brDrag.t < 50) return;
+  brDrag.t = Date.now(); brSend({ action: 'mouse', type: 'move', held: true, ...brPoint(e, brDrag.img) });
+});
+document.addEventListener('pointerup', (e) => {
+  if (!brDrag) return;
+  const img = brDrag.img; brDrag = null;
+  brSend({ action: 'mouse', type: 'up', ...brPoint(e, img) });
+});
+
+// ---------- split panes (like Herdr): several chats side by side ----------
+// The layout is a tree: a split {dir:'row'|'col', kids, sizes} or a pane {id, key}. Pane "main" is the normal
+// chat view; others are frames of this app (?pane=<id>). Panes are placed absolutely from the tree, so a frame
+// never moves in the page (moving it would reload it). Max 4 panes: each keeps a live connection, and browsers
+// allow about 6 per server over http.
+const PN = { tree: { id: 'main' }, focus: 'main', zoom: null, mainKey: '' };
+const PANE_MAX = 4;
+const narrow = () => matchMedia('(max-width: 760px)').matches;
+const leaves = (n = PN.tree) => n.kids ? n.kids.flatMap((k) => leaves(k)) : [n];
+const findParent = (id, n = PN.tree) => { if (!n.kids) return null; for (const k of n.kids) { if (k.id === id) return n; const p = findParent(id, k); if (p) return p; } return null; };
+const findLeaf = (id) => leaves().find((l) => l.id === id);
+const keyName = (key) => { if (!key) return 'Empty pane'; const t = threadOf(key), r = key.startsWith('room:') ? S.data.rooms.find((x) => 'room:' + x.id === key) : null;
+  const b = t ? bot(t.bot_id) : key.startsWith('bot:') ? bot(Number(key.slice(4))) : null; return r ? r.name : b ? b.name + (t ? ' · ' + threadName(t) : '') : key; };
+
+function paneBtns() {
+  const multi = EMBED || leaves().length > 1;
+  return `<button class="icon-btn" data-act="pane-menu" title="Split pane (${esc(kbLabel(kbGet('split-right')))} right, ${esc(kbLabel(kbGet('split-down')))} down)" aria-label="Split pane">${ICON.split}</button>`
+    + (multi ? `<button class="icon-btn" data-act="pane-close" title="Close pane (${esc(kbLabel(kbGet('close')))})" aria-label="Close pane">${ICON.close}</button>` : '');
+}
+function pickList() {
+  const items = [...S.data.bots.map((b) => ({ key: 'bot:' + b.id, html: avatar(b, 26), name: b.name, sub: b.role })), ...S.data.rooms.map((r) => ({ key: 'room:' + r.id, html: roomAvatar(r, 26), name: r.name, sub: `${r.members.length} bots` }))];
+  return items.map((i) => `<button class="pane-pick-item" data-open="${i.key}">${i.html}<span><b>${esc(i.name)}</b><small>${esc(i.sub || '')}</small></span></button>`).join('') || '<p class="muted">No bots yet.</p>';
+}
+// A frame asks its parent; the parent acts.
+function paneCmd(cmd, extra = {}) {
+  if (EMBED) return parent.postMessage({ nimbusPane: cmd, id: EMBED, ...extra }, location.origin);
+  paneDo(cmd, PN.focus, extra);
+}
+function paneDo(cmd, from, extra = {}) {
+  if (from) PN.focus = from;
+  if (cmd === 'split-right' || cmd === 'split-down') return paneSplit(narrow() ? 'col' : cmd === 'split-right' ? 'row' : 'col', extra.key || '');
+  if (cmd === 'close') return paneClose(PN.focus);
+  if (cmd === 'zoom') { PN.zoom = PN.zoom ? null : PN.focus; return panesLayout(); }
+  if (cmd === 'focus') return panesLayout();
+  if (cmd === 'next' || cmd === 'prev') { const l = leaves(), i = l.findIndex((x) => x.id === PN.focus); PN.focus = l[(i + (cmd === 'next' ? 1 : l.length - 1)) % l.length].id; panesLayout(); return paneFocusEl(); }
+  if (cmd === 'menu') return paneMenu(extra.x, extra.y, from);
+  if (cmd === 'shortcuts') return shortcutsModal();
+  if (cmd === 'sidebar') return innerWidth > 760 && setSideCollapsed(!document.body.classList.contains('side-collapsed'));
+}
+function paneSplit(dir, key) {
+  if (leaves().length >= PANE_MAX) return toast(`Up to ${PANE_MAX} panes at once`);
+  const id = 'p' + Date.now().toString(36), leaf = findLeaf(PN.focus) || PN.tree, add = { id, key };
+  const par = findParent(leaf.id);
+  if (par && par.dir === dir) { const i = par.kids.indexOf(leaf); par.kids.splice(i + 1, 0, add); par.sizes = par.kids.map(() => 1 / par.kids.length); }
+  else { const node = { id: leaf.id, key: leaf.key }; Object.keys(leaf).forEach((k) => delete leaf[k]); Object.assign(leaf, { dir, kids: [node, add], sizes: [0.5, 0.5] }); }
+  PN.focus = id; PN.zoom = null;
+  panesLayout(); panesSave(); renderMain();
+}
+function paneClose(id) {
+  if (leaves().length < 2) return;
+  if (id === 'main') { // keep the main view: it takes over the focused frame's chat
+    const other = leaves().find((l) => l.id !== 'main'); const k = other.key; paneRemove(other.id); if (k) openThread(k); return;
+  }
+  paneRemove(id);
+}
+function paneRemove(id) {
+  const par = findParent(id); if (!par) return;
+  const i = par.kids.findIndex((k) => k.id === id);
+  par.kids.splice(i, 1); par.sizes.splice(i, 1);
+  const tot = par.sizes.reduce((a, b) => a + b, 0); par.sizes = par.sizes.map((s) => s / tot);
+  if (par.kids.length === 1) { const only = par.kids[0]; Object.keys(par).forEach((k) => delete par[k]); Object.assign(par, only); }
+  document.querySelector(`.pane-frame[data-pane="${id}"]`)?.remove();
+  if (PN.focus === id || !findLeaf(PN.focus)) PN.focus = 'main';
+  if (PN.zoom === id) PN.zoom = null;
+  panesLayout(); panesSave(); renderMain();
+}
+// Clicking a chat in the sidebar opens it in the focused pane.
+function paneOpen(key) {
+  if (EMBED || PN.focus === 'main' || !findLeaf(PN.focus)) return openThread(key);
+  const l = findLeaf(PN.focus); l.key = key;
+  const f = document.querySelector(`.pane-frame[data-pane="${l.id}"] iframe`);
+  if (f) f.contentWindow.location.hash = key;
+  $('#side').classList.remove('open'); panesSave(); panesLayout();
+}
+function paneMainKey(key) { PN.mainKey = key; }
+function paneFocusEl() { const f = document.querySelector(`.pane-frame[data-pane="${PN.focus}"] iframe`); (f ? f.contentWindow : window).focus(); }
+
+function panesLayout() {
+  const root = $('#panes'), multi = leaves().length > 1;
+  document.body.classList.toggle('split', multi);
+  root.querySelectorAll('.pane-div').forEach((d) => d.remove());
+  const place = (el, r) => Object.assign(el.style, { left: r.x * 100 + '%', top: r.y * 100 + '%', width: r.w * 100 + '%', height: r.h * 100 + '%' });
+  const walk = (n, r) => {
+    if (!n.kids) {
+      let el = n.id === 'main' ? $('#main') : root.querySelector(`.pane-frame[data-pane="${n.id}"]`);
+      if (!el) { el = document.createElement('div'); el.className = 'pane-frame'; el.dataset.pane = n.id;
+        el.innerHTML = `<iframe src="/?pane=${n.id}${n.key ? '#' + n.key : ''}" title="${esc(keyName(n.key))}"></iframe>`; root.append(el); }
+      if (!multi) { el.removeAttribute('style'); el.classList.remove('pane-focus'); return; }
+      const z = PN.zoom && findLeaf(PN.zoom);
+      place(el, z ? { x: 0, y: 0, w: 1, h: 1 } : r);
+      el.hidden = !!(z && PN.zoom !== n.id);
+      el.classList.toggle('pane-focus', PN.focus === n.id);
+      return;
+    }
+    let off = 0;
+    n.kids.forEach((k, i) => {
+      const s = n.sizes[i], kr = n.dir === 'row' ? { x: r.x + off * r.w, y: r.y, w: s * r.w, h: r.h } : { x: r.x, y: r.y + off * r.h, w: r.w, h: s * r.h };
+      walk(k, kr); off += s;
+      if (i < n.kids.length - 1 && !PN.zoom) {
+        const d = document.createElement('div'); d.className = 'pane-div ' + n.dir;
+        place(d, n.dir === 'row' ? { x: r.x + off * r.w, y: r.y, w: 0, h: r.h } : { x: r.x, y: r.y + off * r.h, w: r.w, h: 0 });
+        d.addEventListener('pointerdown', (e) => paneDrag(e, n, i, r));
+        root.append(d);
+      }
+    });
+  };
+  walk(PN.tree, { x: 0, y: 0, w: 1, h: 1 });
+}
+function paneDrag(e, n, i, r) {
+  e.preventDefault(); document.body.classList.add('pane-drag');
+  const box = $('#panes').getBoundingClientRect(), pair = n.sizes[i] + n.sizes[i + 1];
+  const start = n.sizes.slice(0, i).reduce((a, b) => a + b, 0);
+  const move = (ev) => {
+    const f = n.dir === 'row' ? ((ev.clientX - box.left) / box.width - r.x) / r.w : ((ev.clientY - box.top) / box.height - r.y) / r.h;
+    const a = Math.max(0.12, Math.min(pair - 0.12, f - start)); n.sizes[i] = a; n.sizes[i + 1] = pair - a; panesLayout();
+  };
+  const up = () => { document.body.classList.remove('pane-drag'); removeEventListener('pointermove', move); removeEventListener('pointerup', up); panesSave(); };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+}
+function panesSave() { localStorage.panes = leaves().length > 1 ? JSON.stringify(PN.tree) : ''; }
+function panesRestore() {
+  try { const t = JSON.parse(localStorage.panes || 'null'); if (t?.kids && leaves(t).some((l) => l.id === 'main') && leaves(t).length <= PANE_MAX) PN.tree = t; } catch {}
+  if (narrow() && leaves().length > 2) PN.tree = { id: 'main' };
+  panesLayout(); if (leaves().length > 1) renderMain();
+}
+function paneMenu(x, y, from) {
+  closePopover();
+  const el = document.createElement('div'); el.className = 'popover';
+  const multi = leaves().length > 1;
+  el.innerHTML = `${narrow() ? '' : `<button data-pn="split-right">${ICON.split}<span>Split right</span><kbd>${esc(kbLabel(kbGet('split-right')))}</kbd></button>`}
+    <button data-pn="split-down">${ICON.split}<span>Split down</span><kbd>${esc(kbLabel(kbGet('split-down')))}</kbd></button>
+    ${multi ? `<button data-pn="zoom">${ICON.grid}<span>${PN.zoom ? 'Show all panes' : 'Zoom this pane'}</span><kbd>${esc(kbLabel(kbGet('zoom')))}</kbd></button>
+    <button data-pn="next">${ICON.chevron}<span>Next pane</span><kbd>${esc(kbLabel(kbGet('next')))}</kbd></button>
+    <button data-pn="close">${ICON.close}<span>Close pane</span><kbd>${esc(kbLabel(kbGet('close')))}</kbd></button>` : ''}`;
+  document.body.append(el);
+  const fr = from && from !== 'main' ? document.querySelector(`.pane-frame[data-pane="${from}"]`)?.getBoundingClientRect() : null;
+  const px = (fr?.left || 0) + x, py = (fr?.top || 0) + y;
+  el.style.left = Math.max(8, Math.min(px - el.offsetWidth, innerWidth - el.offsetWidth - 8)) + 'px';
+  el.style.top = Math.max(8, Math.min(py, innerHeight - el.offsetHeight - 8)) + 'px';
+  el.insertAdjacentHTML('beforeend', `<button data-pn="shortcuts">${ICON.keyboard}<span>Keyboard shortcuts</span><kbd>${esc(kbLabel(kbGet('shortcuts')))}</kbd></button>`);
+  el.addEventListener('click', (ev) => { const b = ev.target.closest('[data-pn]'); if (!b) return; closePopover(); paneDo(b.dataset.pn, from); });
+}
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('[data-act="pane-menu"], [data-act="pane-close"]'); if (!a) return;
+  e.stopPropagation();
+  const r = a.getBoundingClientRect();
+  if (a.dataset.act === 'pane-close') return paneCmd('close');
+  if (EMBED) paneCmd('menu', { x: r.right, y: r.bottom + 4 }); else paneDo('menu', 'main', { x: r.right, y: r.bottom + 4 });
+}, true);
+if (EMBED) {
+  // Tell the parent which pane you're using, so the sidebar and shortcuts act on it.
+  addEventListener('pointerdown', () => parent.postMessage({ nimbusPane: 'focus', id: EMBED }, location.origin), true);
+  addEventListener('focusin', () => parent.postMessage({ nimbusPane: 'focus', id: EMBED }, location.origin), true);
+} else {
+  addEventListener('message', (e) => {
+    if (e.origin !== location.origin || !e.data?.nimbusPane || !findLeaf(e.data.id)) return;
+    const { nimbusPane: cmd, id } = e.data;
+    if (cmd === 'key') { findLeaf(id).key = e.data.key; panesSave(); return; }
+    if (cmd === 'focus') { if (PN.focus !== id) { PN.focus = id; panesLayout(); } return; }
+    paneDo(cmd, id, e.data);
+  });
+  $('#main').addEventListener('pointerdown', () => { if (PN.focus !== 'main') { PN.focus = 'main'; panesLayout(); } }, true);
+  matchMedia('(max-width: 760px)').addEventListener('change', () => panesLayout());
+}
+
+// ---------- keyboard shortcuts: cheat sheet + your own bindings ----------
+// Saved per browser/device (localStorage), so each person and each device can have their own.
+// A binding is "Ctrl+Alt+Shift+Meta+<KeyboardEvent.code>" (code = the physical key, so layouts don't matter).
+const KB = [
+  ['split-right', 'Split pane right', 'Ctrl+Alt+Backslash'], ['split-down', 'Split pane down', 'Ctrl+Alt+Minus'],
+  ['close', 'Close pane', 'Ctrl+Alt+KeyW'], ['zoom', 'Zoom pane / show all', 'Ctrl+Alt+Enter'],
+  ['next', 'Next pane', 'Ctrl+Alt+ArrowRight'], ['prev', 'Previous pane', 'Ctrl+Alt+ArrowLeft'],
+  ['sidebar', 'Show / hide the sidebar', 'Ctrl+KeyB'], ['shortcuts', 'Keyboard shortcuts', 'Ctrl+Slash']
+];
+const kbMine = () => { try { return JSON.parse(localStorage.keybinds || '{}'); } catch { return {}; } };
+function kbGet(act) { const m = kbMine(); return act in m ? m[act] : KB.find((k) => k[0] === act)?.[2] || ''; }
+const comboOf = (e) => ['Ctrl', 'Alt', 'Shift', 'Meta'].filter((m) => e[m.toLowerCase() + 'Key']).concat(e.code).join('+');
+const KEYNAME = { Backslash: '\\', Minus: '-', Equal: '=', Slash: '/', Period: '.', Comma: ',', Semicolon: ';', Quote: "'", BracketLeft: '[', BracketRight: ']', Backquote: '`',
+  ArrowRight: '→', ArrowLeft: '←', ArrowUp: '↑', ArrowDown: '↓', Space: 'Space', Enter: 'Enter', Escape: 'Esc', Tab: 'Tab', Backspace: 'Backspace' };
+function kbLabel(c) {
+  if (!c) return 'none';
+  return c.split('+').map((p) => KEYNAME[p] || p.replace(/^Key|^Digit|^Numpad/, '').replace('Meta', /Mac/.test(navigator.platform) ? '⌘' : 'Win')).join('+');
+}
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.altKey || e.metaKey) || /^(Control|Alt|Shift|Meta)/.test(e.code) || $('.kb-rec')) return;
+  const c = comboOf(e), hit = KB.find(([act]) => kbGet(act) === c);
+  if (!hit) return;
+  if (hit[0] === 'sidebar' && e.target.closest?.('[contenteditable="true"]')) return; // Ctrl+B is bold in the editor
+  e.preventDefault(); e.stopPropagation();
+  if (hit[0] === 'shortcuts') return EMBED ? paneCmd('shortcuts') : shortcutsModal();
+  if (hit[0] === 'sidebar') return EMBED ? paneCmd('sidebar') : (innerWidth > 760 && setSideCollapsed(!document.body.classList.contains('side-collapsed')));
+  paneCmd(hit[0]);
+}, true);
+function shortcutsModal() {
+  const fixed = [['Send message', 'Enter'], ['New line', 'Shift+Enter'], ['Close a menu or window', 'Esc']];
+  const el = modal(`<h3>${ICON.keyboard} Keyboard shortcuts</h3>
+    <p class="muted">Click a shortcut to change it, then press the new keys (with Ctrl, Alt or ${/Mac/.test(navigator.platform) ? '⌘' : 'Win'}). Saved on this device.</p>
+    <div class="kb-list">${KB.map(([act, name]) => `<div class="kb-row"><span>${esc(name)}</span>
+      <button class="kb-key" data-kb="${act}" title="Change">${esc(kbLabel(kbGet(act)))}</button>
+      <button class="icon-btn kb-clear" data-kb-clear="${act}" title="Turn off" aria-label="Turn off">${ICON.close}</button></div>`).join('')}
+      ${fixed.map(([n, k]) => `<div class="kb-row fixed"><span>${n}</span><kbd>${k}</kbd></div>`).join('')}</div>
+    <div class="row"><button class="btn" data-kb-reset>Reset to defaults</button><button class="btn primary" data-kb-done>Done</button></div>`, { cls: 'kb-modal' });
+  const save = (act, c) => { const m = kbMine(), def = KB.find((k) => k[0] === act)[2]; if (c === def) delete m[act]; else m[act] = c; localStorage.keybinds = JSON.stringify(m); };
+  el.addEventListener('click', (ev) => {
+    const t = ev.target.closest('button'); if (!t) return;
+    if (t.dataset.kbDone !== undefined) return closeModal();
+    if (t.dataset.kbReset !== undefined) { delete localStorage.keybinds; renderSide?.(); return shortcutsModal(); }
+    if (t.dataset.kbClear) { save(t.dataset.kbClear, ''); return shortcutsModal(); }
+    if (!t.dataset.kb) return;
+    el.querySelector('.kb-rec')?.classList.remove('kb-rec');
+    t.classList.add('kb-rec'); t.textContent = 'Press keys…';
+    const rec = (e) => {
+      if (/^(Control|Alt|Shift|Meta)/.test(e.code)) return;
+      e.preventDefault(); e.stopPropagation(); removeEventListener('keydown', rec, true);
+      if (e.key === 'Escape') return shortcutsModal();
+      if (!(e.ctrlKey || e.altKey || e.metaKey)) { toast('Use Ctrl, Alt or ' + (/Mac/.test(navigator.platform) ? '⌘' : 'Win') + ' with a key'); return shortcutsModal(); }
+      const c = comboOf(e), clash = KB.find(([a]) => a !== t.dataset.kb && kbGet(a) === c);
+      if (clash) save(clash[0], ''); // a key does one thing: the old action loses it
+      save(t.dataset.kb, c);
+      if (clash) toast(`Moved from “${clash[1]}” (now off)`);
+      shortcutsModal();
+    };
+    addEventListener('keydown', rec, true);
+  });
+}

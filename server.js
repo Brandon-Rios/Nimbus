@@ -15,6 +15,7 @@ import { UPLOADS, MAX_UPLOAD, safeName, uploadPath, readUpload, saveUpload, addV
 import { claudeEnv, claudeStatus, setClaudeToken, TOKEN_RE } from './claudeauth.js';
 import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport, cancelQueued, editQueued, threadLimit } from './runner.js';
 import * as TH from './threads.js';
+import { ensureBrowser, watchBrowser, browserInput, closeBrowser } from './browser.js';
 import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
 import { startScheduler, nextRun, isValidCron } from './scheduler.js';
 import { getPlanUsage, getModels } from './planusage.js';
@@ -632,6 +633,37 @@ route('POST', '/api/hook/threads', thTry(async (req, res) => {
   }
   json(res, 400, { error: 'Unknown action' });
 }));
+
+// ---------- bot browser: live preview pane (see browser.js) ----------
+// One browser per bot, shared by all its threads.
+const userBrowser = (req, id) => String(Number(id));
+const usableBot = (req, id) => q('SELECT 1 FROM bots WHERE id=?').get(Number(id));
+route('GET', '/api/bots/:id/browser/stream', async (req, res, p) => {
+  if (!usableBot(req, p.id)) return json(res, 404, { error: 'No such bot' });
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+  const send = (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+  let stop = null;
+  req.on('close', () => stop?.());
+  try { stop = await watchBrowser(userBrowser(req, p.id), send); if (res.destroyed) stop(); }
+  catch (e) { send({ type: 'error', error: e.message }); res.end(); }
+});
+route('POST', '/api/bots/:id/browser', async (req, res, p) => {
+  if (!usableBot(req, p.id)) return json(res, 404, { error: 'No such bot' });
+  try { const out = await browserInput(userBrowser(req, p.id), await body(req)); json(res, 200, { ok: true, ...(out?.text !== undefined ? { text: out.text } : {}) }); }
+  catch (e) { json(res, 400, { error: e.message }); }
+});
+route('DELETE', '/api/bots/:id/browser', (req, res, p) => {
+  if (!usableBot(req, p.id)) return json(res, 404, { error: 'No such bot' });
+  closeBrowser(userBrowser(req, p.id)); json(res, 200, { ok: true });
+});
+// The Browser plugin's MCP server asks for the bot's browser when a run starts (bin/browser-mcp.mjs).
+route('POST', '/api/hook/browser', async (req, res) => {
+  if (!hookAuth(req)) return json(res, 403, { error: 'forbidden' });
+  const run = q("SELECT * FROM runs WHERE id=? AND status='running'").get(Number((await body(req)).runId));
+  if (!run) return json(res, 400, { error: 'That run isn’t active' });
+  try { json(res, 200, { port: await ensureBrowser(String(run.bot_id)) }); }
+  catch (e) { json(res, 500, { error: e.message }); }
+});
 
 // Routines
 // ---------- marketplace ----------
@@ -1464,7 +1496,7 @@ async function handle(req, res) {
     if (req.method !== 'GET' || url.pathname.startsWith('/api/')) return json(res, 404, { error: 'not found' });
     let file = path.join(PUBLIC, path.normalize(url.pathname).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(PUBLIC) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(PUBLIC, 'index.html');
-    res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'x-frame-options': 'DENY', 'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin', 'cache-control': 'no-cache' });
+    res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'x-frame-options': 'SAMEORIGIN', 'content-security-policy': "frame-ancestors 'self'", 'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin', 'cache-control': 'no-cache' });
     fs.createReadStream(file).pipe(res);
   } catch (e) {
     if (!res.headersSent) json(res, 500, { error: e.message });

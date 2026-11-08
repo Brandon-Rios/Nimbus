@@ -1,4 +1,7 @@
 // Marketplace catalog: ready-made bots (templates) and plugins (MCP connectors).
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const ASK = ['Bash(git push*)', 'Bash(rm -rf*)', 'Bash(*gh pr merge*)', 'mcp__*send*', 'mcp__*delete*', 'mcp__*pay*', 'mcp__*create_event*'];
 
@@ -19,8 +22,8 @@ export const PLUGINS = [
     server: (s) => ({ type: 'http', url: 'https://api.githubcopilot.com/mcp/', headers: { Authorization: `Bearer ${s.GITHUB_TOKEN}` } })
   },
   {
-    id: 'browser', name: 'Browser', category: 'Productivity', kind: 'mcp', icon: '◎', color: '#2d9cdb', desc: 'Open websites, click, type and take screenshots (Playwright).',
-    fields: [], server: () => ({ command: 'npx', args: ['-y', '@playwright/mcp@latest'] })
+    id: 'browser', name: 'Browser', category: 'Productivity', kind: 'mcp', icon: '◎', color: '#2d9cdb', desc: 'Open websites, search, click, type and take screenshots (Playwright). Watch it live in the chat’s Browser pane.',
+    fields: [], server: () => ({ command: process.execPath, args: [path.join(HERE, 'bin', 'browser-mcp.mjs')] })
   },
   {
     id: 'notion', name: 'Notion', category: 'Productivity', kind: 'mcp', icon: 'N', color: '#111111', desc: 'Search, read and update pages and databases.',

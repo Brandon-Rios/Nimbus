@@ -219,6 +219,7 @@ function mcpServers(botId, remote = false) {
     // CDP. A browser started by the plugin itself would close at the end of each reply, and lose sign-ins.
     // Its profile lives in /config/browser-profile, so logins survive restarts.
     if (remote && pl.id === 'browser') {
+      Object.assign(cfg, { command: 'npx', args: ['-y', '@playwright/mcp@latest'] });
       const sh = [
         'C=$(ls -d /opt/ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | sort -V | tail -1)',
         'up() { curl -s -m 2 http://127.0.0.1:9222/json/version >/dev/null; }',
