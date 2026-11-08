@@ -103,7 +103,117 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme
 // ---------- helpers ----------
 const bot = (id) => S.data?.bots.find((b) => b.id === Number(id));
 const room = (id) => S.data?.rooms.find((r) => r.id === Number(id));
-const threadKey = () => S.current ? `${S.current.type}:${S.current.id}` : null;
+const threadKey = () => S.current ? S.current.thread || `${S.current.type}:${S.current.id}` : null;
+// ---------- threads and projects ----------
+const threadOf = (key) => { const m = /^t:(\d+)$/.exec(key || ''); return m ? (S.data?.threads || []).find((t) => t.id === Number(m[1])) || null : null; };
+const projectOf = (id) => (S.data?.projects || []).find((p) => p.id === id) || null;
+const threadName = (key) => (String(key).startsWith('bot:') ? 'General' : threadOf(key)?.title || 'New thread');
+const botKeys = (id) => ['bot:' + id, ...(S.data?.threads || []).filter((t) => t.bot_id === id).map((t) => 't:' + t.id)];
+const TI = {
+  chat: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.8 7L4 20l1.1-4.6A8 8 0 1 1 21 12z"/></svg>',
+  inbox: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z"/></svg>',
+  chev: '<svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="m9 6 6 6-6 6"/></svg>',
+  dots: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
+};
+const sideOpen = JSON.parse(localStorage.sideOpen || '{}'); // bot id / 'p<id>' -> expanded?
+const saveSideOpen = () => { localStorage.sideOpen = JSON.stringify(sideOpen); };
+function crumbHtml() {
+  const t = threadOf(threadKey()), p = t?.project_id ? projectOf(t.project_id) : null;
+  return (p ? `<span class="muted">${esc(p.name)} ›</span> ` : '') + `<span>${esc(threadName(threadKey()))}</span>` + TI.chev;
+}
+function sideTree(b, key) {
+  const ts = S.data.threads.filter((t) => t.bot_id === b.id && !t.archived);
+  const row = (k, label, icon, cls = '') => `<button class="side-sub-item ${cls} ${key === k ? 'active' : ''}" data-open="${k}">${icon}<span class="lbl">${esc(label)}</span>${S.data.last[k] ? `<span class="time">${stamp(S.data.last[k].at)}</span>` : ''}</button>`;
+  const chats = (list, cls = '') => list.filter((t) => t.kind === 'chat').sort((a, x) => (S.data.last['t:' + x.id]?.at || x.created_at) - (S.data.last['t:' + a.id]?.at || a.created_at))
+    .map((t) => row('t:' + t.id, t.title || 'New thread', TI.chat, cls)).join('');
+  const pids = [...new Set([...S.data.projects.filter((p) => p.owner_bot_id === b.id && !p.archived).map((p) => p.id), ...ts.filter((t) => t.project_id).map((t) => t.project_id)])];
+  let h = row('bot:' + b.id, 'General', TI.chat);
+  for (const pid of pids) {
+    const p = projectOf(pid); if (!p) continue;
+    const open = sideOpen['p' + pid] !== false || ts.some((t) => t.project_id === pid && key === 't:' + t.id);
+    h += `<div class="side-proj"><button class="side-sub-item proj ${open ? 'open' : ''}" data-proj-toggle="${pid}">${TI.chev}${ICON.folder}<span class="lbl">${esc(p.name)}</span>${p.owner_bot_id == null ? '<em>shared</em>' : ''}</button><button class="side-more" data-proj-menu="${pid}" data-bot="${b.id}" aria-label="Project options">${TI.dots}</button></div>`;
+    if (open) h += chats(ts.filter((t) => t.project_id === pid), 'in-proj') || `<div class="side-sub-empty in-proj">No threads yet</div>`;
+  }
+  h += chats(ts.filter((t) => !t.project_id));
+  const inbox = ts.find((t) => t.kind === 'inbox'), rt = ts.find((t) => t.kind === 'routines');
+  if (inbox) h += row('t:' + inbox.id, 'Inbox', TI.inbox, 'builtin');
+  if (rt) h += row('t:' + rt.id, 'Routines', ICON.clock, 'builtin');
+  const arch = S.data.threads.filter((t) => t.bot_id === b.id && t.archived && t.kind === 'chat');
+  if (arch.length) {
+    const ao = !!sideOpen['a' + b.id];
+    h += `<button class="side-sub-item builtin proj ${ao ? 'open' : ''}" data-arch-toggle="${b.id}">${TI.chev}${ICON.box}<span class="lbl">Archived (${arch.length})</span></button>`;
+    if (ao) h += arch.map((t) => row('t:' + t.id, t.title || 'New thread', TI.chat, 'in-proj archived')).join('');
+  }
+  h += `<div class="side-sub-add"><button data-new-thread="${b.id}">${ICON.plus}<span>New thread</span></button><button data-new-project="${b.id}">${ICON.folder}<span>New project</span></button></div>`;
+  return `<div class="side-sub">${h}</div>`;
+}
+function sharedProjects(key) {
+  const ps = S.data.projects.filter((p) => p.owner_bot_id == null && !p.archived);
+  if (!ps.length) return '';
+  return `<div class="side-section">Shared projects</div>` + ps.map((p) => {
+    const ts = S.data.threads.filter((t) => t.project_id === p.id && !t.archived && t.kind === 'chat');
+    const rooms = S.data.rooms.filter((r) => r.project_id === p.id);
+    const open = sideOpen['p' + p.id] !== false;
+    return `<div class="side-proj top"><button class="side-sub-item proj ${open ? 'open' : ''}" data-proj-toggle="${p.id}">${TI.chev}${ICON.folder}<span class="lbl">${esc(p.name)}</span><span class="mini-avs">${p.members.slice(0, 4).map((id) => bot(id) ? avatar(bot(id), 16) : '').join('')}</span></button><button class="side-more" data-proj-menu="${p.id}" aria-label="Project options">${TI.dots}</button></div>`
+      + (open ? `<div class="side-sub shared">${rooms.map((r) => `<button class="side-sub-item ${key === 'room:' + r.id ? 'active' : ''}" data-open="room:${r.id}">${roomAvatar(r, 16)}<span class="lbl">${esc(r.name)}</span></button>`).join('')}
+        ${ts.map((t) => `<button class="side-sub-item ${key === 't:' + t.id ? 'active' : ''}" data-open="t:${t.id}">${bot(t.bot_id) ? avatar(bot(t.bot_id), 16) : ''}<span class="lbl">${esc(t.title || 'New thread')}</span>${S.data.last['t:' + t.id] ? `<span class="time">${stamp(S.data.last['t:' + t.id].at)}</span>` : ''}</button>`).join('')}
+        <div class="side-sub-add"><button data-proj-thread="${p.id}">${ICON.plus}<span>New thread</span></button></div></div>` : '');
+  }).join('');
+}
+async function newThread(botId, projectId = null) {
+  try {
+    const { key } = await api('/api/threads', { method: 'POST', body: { botId, projectId } });
+    sideOpen[botId] = true; saveSideOpen();
+    await refreshState(); openThread(key);
+  } catch (e) { toast(e.message); }
+}
+function projectModal(p, { ownerBotId = null, shared = false } = {}) {
+  const isNew = !p;
+  p = p || { name: '', instructions: '', owner_bot_id: shared ? null : ownerBotId, members: ownerBotId ? [ownerBotId] : [] };
+  const members = new Set(p.members);
+  const el = modal(`
+    <div class="modal-head"><h2>${isNew ? (p.owner_bot_id == null ? 'New shared project' : `New project for ${esc(bot(p.owner_bot_id)?.name || 'bot')}`) : 'Project settings'}</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <label class="field">Name<input id="p-name" value="${esc(p.name)}" placeholder="Firewall hardening"></label>
+    <label class="field">Instructions (optional)<textarea id="p-ins" rows="4" placeholder="What this project is about, rules, where things are. The bot reads this when a thread in the project starts.">${esc(p.instructions)}</textarea><span class="hint">Kept short is better: it's read at the start of every thread in the project.</span></label>
+    ${p.owner_bot_id == null ? '<div class="field">Bots in this project<div id="p-picks" class="picks"></div></div>' : ''}
+    <div class="modal-foot">
+      ${isNew ? '' : '<button class="btn danger left" id="p-del">Delete project</button>'}
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn primary" id="p-save">${isNew ? 'Create project' : 'Save'}</button>
+    </div>`);
+  const draw = () => { const pk = $('#p-picks', el); if (pk) pk.innerHTML = S.data.bots.map((b) => `<label class="pick ${members.has(b.id) ? 'on' : ''}"><input type="checkbox" data-pm="${b.id}" ${members.has(b.id) ? 'checked' : ''}>${avatar(b, 28)}<span>${esc(b.name)}</span></label>`).join(''); };
+  draw();
+  el.addEventListener('change', (e) => { if (e.target.dataset.pm) { const id = Number(e.target.dataset.pm); e.target.checked ? members.add(id) : members.delete(id); draw(); } });
+  el.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-close]')) return closeModal();
+    try {
+      if (e.target.id === 'p-del' && confirm(`Delete the project "${p.name}"? Its threads and files are kept (the threads move out of the project).`)) {
+        await api(`/api/projects/${p.id}`, { method: 'DELETE' }); closeModal(); return refreshState();
+      }
+      if (e.target.id === 'p-save') {
+        const b = { name: $('#p-name', el).value, instructions: $('#p-ins', el).value, ...(p.owner_bot_id == null ? { members: [...members] } : {}) };
+        if (isNew) { await api('/api/projects', { method: 'POST', body: { ...b, ownerBotId: p.owner_bot_id } }); if (p.owner_bot_id) { sideOpen[p.owner_bot_id] = true; saveSideOpen(); } }
+        else await api(`/api/projects/${p.id}`, { method: 'PATCH', body: b });
+        closeModal(); refreshState();
+      }
+    } catch (err) { toast(err.message); }
+  });
+  setTimeout(() => $('#p-name', el)?.focus(), 50);
+}
+function moveThreadModal(t) {
+  const ps = S.data.projects.filter((p) => !p.archived && (p.owner_bot_id === t.bot_id || (p.owner_bot_id == null && p.members.includes(t.bot_id))));
+  const el = modal(`<div class="modal-head"><h2>Move “${esc(t.title || 'New thread')}”</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <div class="stack-list">${ps.map((p) => `<button class="card-item ${t.project_id === p.id ? 'active' : ''}" data-mv="${p.id}">${ICON.folder}<span><b>${esc(p.name)}</b><small>${p.owner_bot_id == null ? 'Shared project' : 'This bot’s project'}</small></span></button>`).join('')}
+      <button class="card-item" data-mv="">${TI.chat}<span><b>No project</b><small>Keep it as a loose thread</small></span></button>
+      <button class="card-item" data-mv-new>${ICON.plus}<span><b>New project…</b></span></button></div>`);
+  el.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-close]')) return closeModal();
+    if (e.target.closest('[data-mv-new]')) return projectModal(null, { ownerBotId: t.bot_id });
+    const mv = e.target.closest('[data-mv]'); if (!mv) return;
+    try { await api(`/api/threads/${t.id}`, { method: 'PATCH', body: { projectId: mv.dataset.mv ? Number(mv.dataset.mv) : null } }); closeModal(); refreshState(); } catch (err) { toast(err.message); }
+  });
+}
+let menuThread = null, menuProject = null;
 // A bot's look is stored in `shape` as "hat/glasses/body/face/extra". Older bots only have
 // "hat/glasses"; the missing parts fall back to the original cloud with a smile.
 const HATS = ['none', 'cap', 'beanie', 'tophat', 'crown', 'party', 'headphones', 'halo', 'wizard', 'chef', 'cowboy', 'bow', 'flower', 'horns', 'antenna', 'santa', 'sprout'];
@@ -251,6 +361,22 @@ function whenNext(ms) {
   if (d.toDateString() === tmr.toDateString()) return 'Tmr ' + t;
   return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + t;
 }
+// Makes bare web addresses in already-escaped HTML clickable: after spaces, brackets, quotes, bold or inside
+// `code`, with trailing punctuation left out ("see https://x.com." links x.com). Existing links are skipped.
+function linkify(h) {
+  return h.split(/(<a\b[^>]*>[\s\S]*?<\/a>)/).map((seg, i) => i % 2 ? seg : seg.replace(
+    /(^|[\s(\[>*_]|&quot;|&#39;|&lt;)((?:https?:\/\/|www\.)[^\s<]+)/g, (all, pre, url) => {
+      let tail = '';
+      for (;;) {
+        const m = url.match(/(?:[.,;:!?*_\]]|&quot;|&#39;|&gt;|\)(?![^(]*\())$/);
+        if (!m || (m[0] === ')' && (url.match(/\(/g) || []).length >= (url.match(/\)/g) || []).length)) break;
+        tail = m[0] + tail; url = url.slice(0, -m[0].length);
+      }
+      if (!/[\w/)]/.test(url.slice(-1))) return all;
+      const href = url.startsWith('www.') ? 'https://' + url : url;
+      return `${pre}<a href="${href}" target="_blank" rel="noopener">${url}</a>${tail}`;
+    })).join('');
+}
 function md(src) {
   const blocks = String(src ?? '').split(/```/);
   return blocks.map((part, i) => {
@@ -260,8 +386,8 @@ function md(src) {
         .replace(/`([^`]+)`/g, '<code>$1</code>')
         .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
         .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-        .replace(/(^|\s)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
         .replace(/(^|\s)@([A-Z][\w]*(?: [A-Z][\w]*)?)/g, '$1<strong class="mention">@$2</strong>');
+      h = linkify(h);
       if (/^\s*[-*] /m.test(para) && para.split('\n').every((l) => /^\s*[-*] /.test(l) || !l.trim())) {
         return '<ul>' + h.split('\n').filter((l) => l.trim()).map((l) => `<li>${l.replace(/^\s*[-*] /, '')}</li>`).join('') + '</ul>';
       }
@@ -281,7 +407,7 @@ function renderSide() {
   const d = S.data;
   const key = threadKey();
   const items = [
-    ...d.bots.map((b) => ({ key: 'bot:' + b.id, name: b.name, av: avatar(b, 38), state: b.status.state, last: d.last['bot:' + b.id], fallback: b.role, created: b.created_at })),
+    ...d.bots.map((b) => ({ key: 'bot:' + b.id, bot: b, name: b.name, av: avatar(b, 38), state: b.status.state, last: botKeys(b.id).map((k) => d.last[k]).filter(Boolean).sort((x, y) => y.at - x.at)[0], fallback: b.role, created: b.created_at })),
     ...d.rooms.map((r) => ({ key: 'room:' + r.id, name: r.name, av: roomAvatar(r, 38), state: r.members.some((id) => bot(id)?.status.state === 'working') ? 'working' : 'idle', last: d.last['room:' + r.id], fallback: `${r.members.length} bots`, created: r.created_at }))
   ].filter((it) => !sideQuery || it.name.toLowerCase().includes(sideQuery))
     .sort((a, b) => (b.last?.at || b.created || 0) - (a.last?.at || a.created || 0));
@@ -295,16 +421,18 @@ function renderSide() {
     <div class="side-top">
       <label class="search">${ICON.search}<input id="side-search" placeholder="Search" value="${esc(sideQuery)}" autocomplete="off"></label>
       <button class="icon-btn" data-act="new-menu" aria-label="New">${ICON.plus}</button>
+      <button class="icon-btn side-collapse" data-act="side-collapse" aria-label="Collapse sidebar" title="Collapse sidebar (Ctrl+B)">${ICON.sidebar}</button>
     </div>
     <div class="side-list">
       ${items.length ? items.map((it) => `
-        <button class="side-item ${key === it.key ? 'active' : ''}" data-open="${it.key}" data-key="${it.key}">
+        <button class="side-item ${key === it.key || (it.bot && S.current?.type === 'bot' && S.current.id === it.bot.id && !sideIsOpen(it.bot.id)) ? 'active' : ''}" data-open="${it.key}" data-key="${it.key}">
           <span class="av-wrap">${it.av}${it.state !== 'idle' ? `<span class="dot ${it.state}"></span>` : ''}</span>
           <span class="meta">
             <span class="row1"><span class="name">${esc(it.name)}</span><span class="time">${it.last ? stamp(it.last.at) : ''}</span></span>
             <span class="sub">${esc(it.last ? (it.last.author === 'user' ? 'You: ' : '') + it.last.text : it.fallback || 'Say hi')}</span>
           </span>
-        </button>`).join('') + (sideQuery ? '' : d.sideOrder ? '<button class="side-reset" data-act="side-recent">↺ Sort by recent activity</button>'
+          ${it.bot ? `<span class="side-caret ${sideIsOpen(it.bot.id) ? 'open' : ''}" data-expand="${it.bot.id}" role="button" aria-label="Show threads">${TI.chev}</span>` : ''}
+        </button>${it.bot && !sideQuery && sideIsOpen(it.bot.id) ? sideTree(it.bot, key) : ''}`).join('') + (sideQuery ? '' : sharedProjects(key)) + (sideQuery ? '' : d.sideOrder ? '<button class="side-reset" data-act="side-recent">↺ Sort by recent activity</button>'
           : items.length > 1 ? '<div class="side-hint">Tip: drag chats to arrange them</div>' : '')
         : sideQuery ? '<div class="side-empty">No chats match</div>'
         : `<div class="side-empty">No bots yet.<br><button class="link" data-act="market">Browse Connectors</button> or <button class="link" data-act="new-bot">make one</button>.</div>`}
@@ -323,6 +451,14 @@ renderSide = function () {
   if (drag?.started) return; // don't rebuild the list under your finger mid-drag
   _renderSide(); if (sideQuery.length >= 2) searchMessages(); // keep message hits after re-renders
 };
+
+// A bot's threads show when you expand it; the bot you're in is expanded unless you closed it.
+function sideIsOpen(id) { return sideOpen[id] ?? (S.current?.type === 'bot' && S.current.id === id); }
+document.addEventListener('click', (e) => {
+  const c = e.target.closest('[data-expand]'); if (!c) return;
+  e.stopPropagation(); e.preventDefault();
+  const id = Number(c.dataset.expand); sideOpen[id] = !sideIsOpen(id); saveSideOpen(); renderSide();
+}, true);
 
 // ---------- drag to reorder the sidebar ----------
 // Mouse: press and move. Touch: hold for a moment, then drag (a quick swipe still scrolls the list).
@@ -547,6 +683,7 @@ function renderMain() {
         <b>${esc(isBot ? b.name : r.name)}</b>
         ${isBot && b.status.state !== 'idle' ? `<span class="status ${b.status.state}">${esc(b.status.label)}</span>` : ''}
       </button>
+      ${isBot ? `<button class="th-crumb" data-act="thread-menu" title="Thread options">${crumbHtml()}</button>` : ''}
       <div class="actions">
         ${isBot ? `
           <label class="effort" title="Effort: higher is smarter but uses more of your plan">
@@ -556,7 +693,7 @@ function renderMain() {
           ${b.computer && S.data.computers ? `<button class="icon-btn" data-act="computer" title="${esc(b.name)}’s computer" aria-label="Computer">${ICON.monitor}</button>` : ''}
           <button class="icon-btn" data-act="plugins" title="Plugins" aria-label="Plugins">${ICON.plug}${b.plugins.length ? `<i class="count">${b.plugins.length}</i>` : ''}</button>
           <button class="icon-btn" data-act="memory" title="Memory" aria-label="Memory">${ICON.book}</button>
-          <button class="icon-btn" data-act="reset" title="New chat (memory is kept)" aria-label="New chat">${ICON.compose}</button>
+          <button class="icon-btn" data-act="new-thread" title="New thread" aria-label="New thread">${ICON.compose}</button>
           <button class="icon-btn" data-act="info" title="Chat details: environment, context, connectors" aria-label="Chat details">${ICON.sidebar}</button>
           <button class="icon-btn" data-act="edit-bot" title="Settings" aria-label="Settings">${ICON.gear}</button>`
         : `<button class="icon-btn" data-act="edit-room" title="Settings" aria-label="Settings">${ICON.gear}</button>`}
@@ -566,7 +703,7 @@ function renderMain() {
       </div>
     </header>
     <div class="thread" id="thread"><div class="thread-inner">${renderMessages()}</div></div>
-    <div class="composer">
+    ${threadOf(threadKey())?.kind === 'inbox' ? `<div class="composer inbox-note">${TI.inbox}<span>Inbox: requests from other bots and ${esc(b.name)}’s answers. To talk to ${esc(b.name)}, use General or another thread.</span></div>` : `<div class="composer">
       <div class="attach-list" id="attach-list"></div>
       <form id="composer">
         <button type="button" class="plus" data-act="${isBot ? 'plugins' : 'edit-room'}" aria-label="${isBot ? 'Plugins' : 'Chat settings'}">${ICON.plus}</button>
@@ -577,7 +714,8 @@ function renderMain() {
         <textarea id="msg" rows="1" placeholder="${isBot ? `Message ${esc(b.name)}` : `Message ${esc(r.name)} · @ a bot to direct it`}"></textarea>
         <button class="send" aria-label="Send">${ICON.send}</button>
       </form>
-    </div>`;
+    </div>`}`;
+  if (!$('#msg')) { const th = $('#thread'); th.scrollTop = th.scrollHeight; return; }
   attachAutocorrect($('#msg'));
   if (isRecording() || browserStop) micState('recording'); // re-render during dictation
   const th = $('#thread');
@@ -596,6 +734,9 @@ function renderMessages() {
   if (!S.messages.length) {
     const isBot = S.current.type === 'bot';
     const b = isBot ? bot(S.current.id) : null;
+    const th = threadOf(threadKey());
+    if (th && th.kind === 'chat') return `<div class="empty">${avatar(b, 72)}<h2>${esc(th.title || 'New thread')}</h2><p>A fresh conversation with ${esc(b.name)}. It still knows its role and memory${th.project_id ? `, and reads the “${esc(projectOf(th.project_id)?.name || '')}” project instructions` : ''}.</p></div>`;
+    if (th) return `<div class="empty">${th.kind === 'inbox' ? TI.inbox : ICON.clock}<h2>${th.kind === 'inbox' ? 'Inbox' : 'Routines'}</h2><p>${th.kind === 'inbox' ? `Requests from other bots to ${esc(b.name)} land here, with its answers.` : `${esc(b.name)}’s scheduled routines post here.`}</p></div>`;
     return `<div class="empty">${isBot ? avatar(b, 72) : roomAvatar(room(S.current.id), 72)}<h2>${esc(isBot ? b.name : room(S.current.id).name)}</h2><p>${isBot ? esc(b.role || 'Give this bot a task. It’ll ask before sending, paying, deleting or merging.') : 'Post a goal. The lead bot splits the work, and bots @mention each other to hand things off.'}</p></div>`;
   }
   return S.messages.map((m, i) => renderMessage(m, S.messages[i - 1])).join('');
@@ -667,7 +808,7 @@ document.addEventListener('contextmenu', (e) => {
 });
 
 // ---------- slash commands in the message box ----------
-const SLASH = [['/context', 'Open chat details: what’s using this chat’s context'], ['/compact', 'Shrink this chat’s history so it uses less context (memory is kept)'], ['/new', 'Start a fresh chat with this bot (memory is kept)']];
+const SLASH = [['/context', 'Open chat details: what’s using this chat’s context'], ['/compact', 'Shrink this chat’s history so it uses less context (memory is kept)'], ['/new', 'Start this thread fresh (memory is kept)']];
 function slashHint(v) {
   let box = $('#slash-hint');
   const show = S.current?.type === 'bot' && /^\/\w*$/.test(v);
@@ -812,7 +953,7 @@ function clearAttachments() {
 }
 
 function renderMessage(m, prev) {
-  if (m.author === 'user') return `<div class="msg user" data-mid="${m.id}">${renderFiles(m)}${m.body ? `<div class="bubble">${esc(m.body)}</div>` : ''}${msgStamp(m.created_at)}
+  if (m.author === 'user') return `<div class="msg user" data-mid="${m.id}">${renderFiles(m)}${m.body ? `<div class="bubble">${linkify(esc(m.body))}</div>` : ''}${msgStamp(m.created_at)}
     ${m.queued ? `<div class="queued-tag">Queued · waits for the current task</div><div class="msg-actions show"><button data-qedit="${m.id}">Edit</button><button data-qcancel="${m.id}">Cancel</button></div>` : m.body ? `<div class="msg-actions"><button data-copy="${m.id}" title="Copy">Copy</button><button data-edit="${m.id}" title="Edit and resend">Edit</button><button data-retry="${m.id}" title="Send again">Retry</button></div>` : ''}</div>`;
   if (m.kind === 'note') return `<div class="note" data-mid="${m.id}">${esc(m.body)}${renderFiles(m)}</div>`;
   if (m.kind === 'quiet') return `<div class="note quiet-ok" data-mid="${m.id}" title="Quiet check at ${clock(m.created_at)}">✓ All clear · ${esc(m.body)} <span class="muted">· ${clock(m.created_at)}</span></div>`;
@@ -901,10 +1042,15 @@ function renderApproval(m, b, prev) {
 
 // ---------- navigation ----------
 async function openThread(key) {
-  const [type, id] = key.split(':');
+  let [type, id] = key.split(':'), thread = null;
+  if (type === 't') {
+    const t = threadOf(key);
+    if (!t) { const b = S.data.bots[0]; return b ? openThread('bot:' + b.id) : renderMain(); }
+    type = 'bot'; id = t.bot_id; thread = key;
+  }
   const prev = threadKey();
   if (prev) sessionDraft.set(prev, $('#msg')?.value || '');
-  S.current = { type, id: Number(id) };
+  S.current = { type, id: Number(id), ...(thread ? { thread } : {}) };
   history.replaceState(null, '', '#' + key);
   if (infoBot) { if (type === 'bot') { if (infoBot !== Number(id)) { $('#info').innerHTML = ''; openInfo({ id: Number(id) }); } } else closeInfo(); }
   S.loadingThread = true; S.messages = [];
@@ -959,7 +1105,7 @@ function connect() {
     const i = S.messages.findIndex((x) => x.id === m.id);
     if (i < 0) return;
     S.messages[i] = m;
-    if (m.kind === 'trace' && infoBot && m.thread === 'bot:' + infoBot && JSON.parse(m.body || '{}').status !== 'running') setTimeout(loadInfo, 800);
+    if (m.kind === 'trace' && infoBot && m.thread === threadKey() && S.current?.id === infoBot && JSON.parse(m.body || '{}').status !== 'running') setTimeout(loadInfo, 800);
     const el = document.querySelector(`[data-mid="${m.id}"]`);
     if (el) {
       const th = $('#thread');
@@ -989,6 +1135,7 @@ function updateHeaderBits() {
     const html = b.status.state !== 'idle' ? `<span class="status ${b.status.state}">${esc(b.status.label)}</span>` : '';
     if (st) st.outerHTML = html; else if (html) $('.head .title')?.insertAdjacentHTML('beforeend', html);
   }
+  const cr = $('.head .th-crumb'); if (cr && S.current?.type === 'bot') cr.innerHTML = crumbHtml();
   const bell = $('.head [data-act="panel"]');
   if (bell) bell.innerHTML = ICON.bell + (S.data.approvals.length ? `<i class="count hot">${S.data.approvals.length}</i>` : '');
 }
@@ -1065,7 +1212,7 @@ async function loadInfo() {
   const keep = el.querySelector('.info-body') ? [...el.querySelectorAll('details[open]')].map((d) => d.dataset.k) : ['env', 'ctx', 'conn'];
   if (!el.querySelector('.info-body')) el.innerHTML = `<div class="aside-head"><b>${esc(b.name)}</b><button class="icon-btn" data-info-close aria-label="Close">${ICON.close}</button></div><div class="info-body"><div class="muted">${LOADER} Loading…</div></div>`;
   let r;
-  try { r = await api(`/api/bots/${b.id}/context`); }
+  try { r = await api(`/api/bots/${b.id}/context` + (S.current?.type === 'bot' && S.current.id === b.id ? `?thread=${encodeURIComponent(threadKey())}` : '')); }
   catch (e) { r = { error: e.message }; }
   infoBusy = false;
   if (infoBot !== b.id) return;
@@ -1212,6 +1359,7 @@ function roomModal(r) {
     <label class="field">Goal (bots see this)<textarea id="r-goal" rows="2" placeholder="Plan the team offsite for March.">${esc(r.goal)}</textarea></label>
     <div class="field">Bots<div id="r-picks" class="picks"></div></div>
     <label class="check"><input type="checkbox" id="r-talk" ${r.bots_can_talk ? 'checked' : ''}> Bots can @mention each other to hand off work</label>
+    ${S.data.projects.some((p) => p.owner_bot_id == null && !p.archived) ? `<label class="field">Shared project (optional)<select id="r-proj"><option value="">None</option>${S.data.projects.filter((p) => p.owner_bot_id == null && !p.archived).map((p) => `<option value="${p.id}" ${r.project_id === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select><span class="hint">The chat shows under the project in the sidebar.</span></label>` : ''}
     <div class="modal-foot">
       ${isNew ? '' : '<button class="btn danger left" id="r-del">Delete chat</button>'}
       <button class="btn" data-close>Cancel</button>
@@ -1242,7 +1390,7 @@ function roomModal(r) {
       await api(`/api/rooms/${r.id}`, { method: 'DELETE' }); closeModal(); S.current = null; await refreshState(); renderMain();
     }
     if (e.target.id === 'r-save') {
-      const payload = { name: $('#r-name', el).value.trim(), goal: $('#r-goal', el).value.trim(), members: [...members], lead_bot_id: lead, bots_can_talk: $('#r-talk', el).checked };
+      const payload = { name: $('#r-name', el).value.trim(), goal: $('#r-goal', el).value.trim(), members: [...members], lead_bot_id: lead, bots_can_talk: $('#r-talk', el).checked, ...($('#r-proj', el) ? { project_id: $('#r-proj', el).value ? Number($('#r-proj', el).value) : null } : {}) };
       if (!payload.name) return toast('Give the chat a name');
       if (!payload.members.length) return toast('Pick at least one bot');
       const saved = isNew ? await api('/api/rooms', { method: 'POST', body: payload }) : await api(`/api/rooms/${r.id}`, { method: 'PATCH', body: payload });
@@ -1617,6 +1765,8 @@ async function serverModal() {
     <h3>Chats</h3>
     <label class="field">Trusted bots<input id="s-trusted_bots" value="${esc(v.trusted_bots || '')}" placeholder="3"><span class="hint">Bot numbers allowed to read Nimbus’s private data and change its code (e.g. Nimbus Manager). Other bots can’t touch data/, .env or Nimbus’s files; their own folder, uploads and data/shared stay open.</span></label>
     <label class="field">Bot sandbox<input id="s-sandbox" value="${esc(v.sandbox || '')}" placeholder="off"><span class="hint"><code>off</code>, <code>all</code>, bot numbers like <code>5,9</code>, or <code>all,-3</code> for every bot except #3. Sandboxed bots only see their own folder and Nimbus’s tools; the rest of the home folder (keys, ~/.ssh, other bots) is hidden. Needs bubblewrap: <code>apt install bubblewrap</code>. Bots on bot computers aren’t affected.</span></label>
+    <label class="field">Threads at once per bot<select id="s-thread_limit">${['1', '2', '3'].map((n) => `<option value="${n}" ${String(v.thread_limit || '2') === n ? 'selected' : ''}>${n}${n === '1' ? ' (threads take turns)' : n === '2' ? ' (default)' : ''}</option>`).join('')}</select><span class="hint">Only your own messages use the extra slots. Routines and requests from other bots always take turns.</span></label>
+    <label class="field">Usage guard (% of the 5-hour limit left)<input id="s-usage_guard_pct" type="number" min="0" max="90" value="${esc(v.usage_guard_pct || '15')}"><span class="hint">Below this much left, a bot’s threads take turns again to save your plan.</span></label>
     <label class="field">Auto-compact at (% of context)<input id="s-auto_compact_pct" type="number" min="0" max="95" value="${esc(v.auto_compact_pct || '20')}"><span class="hint">When a chat’s context passes this, Nimbus compacts it between messages. 0 turns it off. You can also type <code>/compact</code> in any chat.</span></label>
     <h3>Backups</h3>
     <p class="muted">Every night at 3:15 Nimbus saves an encrypted copy of all bots, chats, memories and settings (last 14 kept on this server).
@@ -2512,6 +2662,21 @@ document.addEventListener('click', async (e) => {
   if (t.closest('#modal-root')) return;
   const cur = S.current?.type === 'bot' ? bot(S.current.id) : null;
   if (t.dataset.open) return openThread(t.dataset.open);
+  if (t.dataset.projToggle) { const k = 'p' + t.dataset.projToggle; sideOpen[k] = !t.classList.contains('open'); saveSideOpen(); return renderSide(); }
+  if (t.dataset.archToggle) { sideOpen['a' + t.dataset.archToggle] = !sideOpen['a' + t.dataset.archToggle]; saveSideOpen(); return renderSide(); }
+  if (t.dataset.newThread) return newThread(Number(t.dataset.newThread));
+  if (t.dataset.newProject) return projectModal(null, { ownerBotId: Number(t.dataset.newProject) });
+  if (t.dataset.projMenu) {
+    e.stopPropagation(); menuProject = projectOf(Number(t.dataset.projMenu));
+    return popover(t, [...(menuProject?.owner_bot_id != null ? [['pr-thread', 'New thread in project', ICON.plus]] : []), ['pr-edit', 'Project settings', ICON.gear]]);
+  }
+  if (t.dataset.projThread) {
+    e.stopPropagation(); const p = projectOf(Number(t.dataset.projThread)); if (!p) return;
+    if (p.members.length === 1) return newThread(p.members[0], p.id);
+    menuProject = p;
+    return popover(t, p.members.filter((id) => bot(id)).map((id) => ['ptb:' + id, `With ${esc(bot(id).name)}`, avatar(bot(id), 18)]));
+  }
+  if (t.dataset.act?.startsWith('ptb:')) { closePopover(); return newThread(Number(t.dataset.act.slice(4)), menuProject.id); }
   if (t.dataset.computer) { const cb = bot(t.dataset.computer); if (cb) return computerModal(cb); }
   if (t.dataset.qcancel) { try { await api(`/api/messages/${t.dataset.qcancel}/queued`, { method: 'POST', body: { action: 'cancel' } }); toast('Removed from the queue'); } catch (err) { toast(err.message); } return; }
   if (t.dataset.qedit) {
@@ -2548,7 +2713,7 @@ document.addEventListener('click', async (e) => {
   const act = t.dataset.act;
   if (act) closePopover();
   switch (act) {
-    case 'new-menu': e.stopPropagation(); return popover(t, [['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['market', 'Browse Connectors', ICON.grid]]);
+    case 'new-menu': e.stopPropagation(); return popover(t, [...(cur ? [['new-thread', `New thread with ${esc(cur.name)}`, TI.chat]] : []), ['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['new-shared-project', 'New shared project', ICON.folder], ['market', 'Browse Connectors', ICON.grid]]);
     case 'claude': return claudeModal();
     case 'docs': return docsModal();
     case 'artifacts': return openArtifacts();
@@ -2571,7 +2736,22 @@ document.addEventListener('click', async (e) => {
     case 'log': return activityLogModal();
     case 'app-server': return window.NimbusApp?.changeServer();
     case 'computer': return computerModal(cur);
-    case 'reset': await api(`/api/bots/${cur.id}/reset`, { method: 'POST' }); return;
+    case 'reset': await api(`/api/bots/${cur.id}/reset`, { method: 'POST', body: { thread: threadKey() } }); return;
+    case 'new-thread': { const t = threadOf(threadKey()); return newThread(cur.id, t?.kind === 'chat' ? t.project_id : null); }
+    case 'thread-menu': {
+      e.stopPropagation(); menuThread = threadOf(threadKey());
+      const chat = menuThread?.kind === 'chat';
+      return popover(t, [['new-thread', 'New thread', ICON.plus], ...(chat ? [['th-rename', 'Rename', ICON.compose], ['th-move', 'Move to project…', ICON.folder], menuThread.archived ? ['th-unarchive', 'Unarchive', ICON.box] : ['th-archive', 'Archive', ICON.box], ['th-delete', 'Delete', ICON.close]] : []),
+        ...(menuThread?.kind === 'inbox' ? [] : [['reset', 'Start fresh (memory kept)', ICON.clock]])]);
+    }
+    case 'th-rename': { const n = prompt('Thread name', menuThread?.title || ''); if (n == null || !menuThread) return; try { await api(`/api/threads/${menuThread.id}`, { method: 'PATCH', body: { title: n } }); refreshState().then(renderMain); } catch (err) { toast(err.message); } return; }
+    case 'th-unarchive': if (!menuThread) return; try { await api(`/api/threads/${menuThread.id}`, { method: 'PATCH', body: { archived: false } }); await refreshState(); renderMain(); } catch (err) { toast(err.message); } return;
+    case 'th-move': return menuThread && moveThreadModal(menuThread);
+    case 'th-archive': if (!menuThread) return; try { await api(`/api/threads/${menuThread.id}`, { method: 'PATCH', body: { archived: true } }); await refreshState(); openThread('bot:' + menuThread.bot_id); toast('Archived. Find it under the bot’s “Archived” list.'); } catch (err) { toast(err.message); } return;
+    case 'th-delete': if (!menuThread || !confirm(`Delete “${menuThread.title || 'New thread'}” and its messages? This can’t be undone.`)) return; try { await api(`/api/threads/${menuThread.id}`, { method: 'DELETE' }); await refreshState(); openThread('bot:' + menuThread.bot_id); } catch (err) { toast(err.message); } return;
+    case 'pr-edit': return menuProject && projectModal(menuProject);
+    case 'pr-thread': return menuProject && (menuProject.owner_bot_id != null ? newThread(menuProject.owner_bot_id, menuProject.id) : null);
+    case 'new-shared-project': return projectModal(null, { shared: true });
     case 'side-recent': S.data.sideOrder = null; renderSide(); return api('/api/side-order', { method: 'PUT', body: { order: null } });
     case 'effort-menu': {
       e.stopPropagation(); closePopover();
@@ -2591,7 +2771,8 @@ document.addEventListener('click', async (e) => {
       });
       return;
     }
-    case 'menu': e.stopPropagation(); return $('#side').classList.toggle('open');
+    case 'menu': e.stopPropagation(); if (innerWidth > 760) return setSideCollapsed(false); return $('#side').classList.toggle('open');
+    case 'side-collapse': return setSideCollapsed(true);
     case 'panel': e.stopPropagation(); $('#side').classList.remove('open'); closeInfo(); return $('#aside').classList.toggle('open');
     case 'info': e.stopPropagation(); return infoBot === cur?.id && $('#info').classList.contains('open') ? closeInfo() : cur && openInfo(cur);
     case 'logout': await api('/api/logout', { method: 'POST' }); location.href = '/login'; return;
@@ -2644,7 +2825,7 @@ document.addEventListener('submit', async (e) => {
   e.preventDefault();
   const ta = $('#msg'); const text = ta.value.trim();
   if (/^\/context$/i.test(text) && S.current?.type === 'bot') { ta.value = ''; autosize(ta); return openInfo(bot(S.current.id)); }
-  if (/^\/(new|clear)$/i.test(text)) { ta.value = ''; autosize(ta); await api(`/api/bots/${S.current.id}/reset`, { method: 'POST' }); return; }
+  if (/^\/(new|clear)$/i.test(text)) { ta.value = ''; autosize(ta); await api(`/api/bots/${S.current.id}/reset`, { method: 'POST', body: { thread: threadKey() } }); return; }
   if (attachments.some((a) => !a.id && !a.error)) return toast('Still uploading…');
   const files = attachments.filter((a) => a.id).map((a) => a.id);
   if (!text && !files.length) return;
@@ -2673,7 +2854,7 @@ document.addEventListener('drop', (e) => {
 
 window.addEventListener('hashchange', () => {
   const h = location.hash.slice(1);
-  if (/^(bot|room):\d+$/.test(h) && h !== threadKey()) openThread(h);
+  if (/^(bot|room|t):\d+$/.test(h) && h !== threadKey()) openThread(h);
 });
 
 // ---------- Office files: preview in the side pane, versions, sharing, editing ----------
@@ -2904,9 +3085,29 @@ applyTheme();
   await refreshState();
   const hash = location.hash.slice(1);
   const first = Object.entries(S.data.last).sort((a, b) => b[1].at - a[1].at)[0]?.[0];
-  if (/^(bot|room):\d+$/.test(hash)) openThread(hash);
+  if (/^(bot|room|t):\d+$/.test(hash)) openThread(hash);
   else if (/^doc:d_[0-9a-f]+$/.test(hash)) { if (first || S.data.bots[0]) await openThread(first || 'bot:' + S.data.bots[0].id); openDoc(hash.slice(4)); }
   else if (matchMedia('(min-width: 761px)').matches && (first || S.data.bots[0])) openThread(first || 'bot:' + S.data.bots[0].id);
   else renderMain();
   connect();
+})();
+
+// ---------- sidebar size: drag its edge (200–520px, double-click resets), collapse with its button or Ctrl+B ----------
+function setSideCollapsed(on) { document.body.classList.toggle('side-collapsed', on); localStorage.sideCollapsed = on ? '1' : ''; }
+(() => {
+  const root = document.documentElement, h = $('#side-resize');
+  if (localStorage.sideW) root.style.setProperty('--side-w', localStorage.sideW + 'px');
+  if (localStorage.sideCollapsed) document.body.classList.add('side-collapsed');
+  h.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); h.setPointerCapture(e.pointerId); h.classList.add('drag'); document.body.classList.add('side-dragging');
+    const move = (ev) => { const w = Math.round(ev.clientX); if (w < 120) return; root.style.setProperty('--side-w', Math.min(520, Math.max(200, w)) + 'px'); };
+    const up = (ev) => {
+      h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', up); h.classList.remove('drag'); document.body.classList.remove('side-dragging');
+      if (ev.clientX < 120) { root.style.setProperty('--side-w', (localStorage.sideW || 280) + 'px'); return setSideCollapsed(true); } // dragged nearly shut: collapse
+      localStorage.sideW = parseInt(getComputedStyle(root).getPropertyValue('--side-w')) || 280;
+    };
+    h.addEventListener('pointermove', move); h.addEventListener('pointerup', up);
+  });
+  h.addEventListener('dblclick', () => { root.style.removeProperty('--side-w'); delete localStorage.sideW; });
+  addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b' && innerWidth > 760 && !e.target.closest('[contenteditable="true"]')) { e.preventDefault(); setSideCollapsed(!document.body.classList.contains('side-collapsed')); } });
 })();

@@ -13,7 +13,8 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import * as Docs from './docs.js';
 import { UPLOADS, MAX_UPLOAD, safeName, uploadPath, readUpload, saveUpload, addVersion, registerFiles } from './files.js';
 import { claudeEnv, claudeStatus, setClaudeToken, TOKEN_RE } from './claudeauth.js';
-import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport, cancelQueued, editQueued } from './runner.js';
+import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport, cancelQueued, editQueued, threadLimit } from './runner.js';
+import * as TH from './threads.js';
 import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
 import { startScheduler, nextRun, isValidCron } from './scheduler.js';
 import { getPlanUsage, getModels } from './planusage.js';
@@ -115,16 +116,23 @@ function state(req) {
   for (const b of bots) b.plugins = botPlugins[b.id] || [];
   const installed = q('SELECT id FROM plugins').all().map((r) => r.id);
   const sideOrder = JSON.parse(getSetting('side_order') || 'null'); // custom sidebar order, or null = most recent first
-  return { sideOrder, bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), claude: claudeStatus(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
+  const { threads, projects } = TH.listAll();
+  return { sideOrder, threads, projects, threadLimit: threadLimit(), bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), claude: claudeStatus(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
 }
 
 function postToThread(thread, text, files = []) {
+  if (thread.startsWith('t:')) {
+    const t = TH.threadRow(thread);
+    if (!t) throw Object.assign(new Error('This thread was deleted'), { status: 404 });
+    if (t.kind === 'inbox') throw Object.assign(new Error('The Inbox is for requests from other bots. Message the bot in another thread.'), { status: 403 });
+  } else if (!/^(bot|room):\d+$/.test(thread)) throw Object.assign(new Error('Unknown chat'), { status: 404 });
   files = files.map((f) => addVersion(thread, f, 'user:0')); // attachments join the chat's Files (same name = next version)
   const msg = addMessage(thread, 'user', 'text', text, null, files);
   // Bots see attachments as file paths; Claude Code's Read tool opens images and PDFs too.
   if (files.length) text = `${text || 'See the attached files.'}\n\nAttached files (open them with the Read tool):\n` + files.map((f) => `- ${uploadPath(f)} (${f.type || 'file'}, ${f.size} bytes)`).join('\n');
-  if (thread.startsWith('bot:')) {
-    runBot({ botId: Number(thread.slice(4)), thread, prompt: text, msgId: msg.id, msgText: msg.body });
+  if (thread.startsWith('bot:') || thread.startsWith('t:')) {
+    TH.autoTitle(thread, msg.body);
+    runBot({ botId: TH.threadBot(thread), thread, prompt: text, msgId: msg.id, msgText: msg.body });
   } else if (thread.startsWith('room:')) {
     const roomId = Number(thread.slice(5));
     const room = q('SELECT * FROM rooms WHERE id=?').get(roomId);
@@ -159,7 +167,8 @@ route('POST', '/api/threads/:thread/messages', async (req, res, p) => {
   const { text = '', files: ids = [] } = await body(req);
   const files = (Array.isArray(ids) ? ids : []).slice(0, 10).map(readUpload).filter(Boolean);
   if (!String(text).trim() && !files.length) return json(res, 400, { error: 'empty' });
-  json(res, 200, postToThread(decodeURIComponent(p.thread), String(text).trim(), files));
+  try { json(res, 200, postToThread(decodeURIComponent(p.thread), String(text).trim(), files)); }
+  catch (e) { json(res, e.status || 500, { error: e.message }); }
 });
 
 // A message waiting in the bot's queue: change it or take it back before the bot starts.
@@ -472,6 +481,7 @@ route('DELETE', '/api/bots/:id', (req, res, p) => {
   q('DELETE FROM bots WHERE id=?').run(p.id);
   q('DELETE FROM room_members WHERE bot_id=?').run(p.id);
   q('DELETE FROM routines WHERE bot_id=?').run(p.id);
+  TH.removeBotThreads(p.id);
   broadcast('state_changed', {});
   json(res, 200, { ok: true });
 });
@@ -559,11 +569,69 @@ route('GET', '/api/bots/:id/context', async (req, res, p, url) => {
   try { context = await contextReport(bot.id, url.searchParams.get('thread') || 'bot:' + bot.id); } catch (e) { error = e.message; }
   json(res, 200, { env, plugins, connectors, context, error });
 });
-route('POST', '/api/bots/:id/reset', (req, res, p) => {
-  q('DELETE FROM sessions WHERE bot_id=?').run(p.id);
-  addMessage('bot:' + p.id, 'system', 'note', 'Started a fresh conversation. Memory is kept.');
+route('POST', '/api/bots/:id/reset', async (req, res, p) => {
+  const thread = String((await body(req)).thread || 'bot:' + p.id);
+  if (TH.threadBot(thread) !== Number(p.id)) return json(res, 400, { error: 'Not this bot’s thread' });
+  q('DELETE FROM sessions WHERE bot_id=? AND thread=?').run(p.id, thread);
+  addMessage(thread, 'system', 'note', 'Started a fresh conversation in this thread. Memory is kept.');
   json(res, 200, { ok: true });
 });
+
+// ---------- threads and projects (threads.js) ----------
+const thOk = (res, extra = {}) => { broadcast('state_changed', {}); json(res, 200, { ok: true, ...extra }); };
+const thTry = (fn) => async (req, res, p) => { try { await fn(req, res, p); } catch (e) { json(res, 400, { error: e.message }); } };
+route('POST', '/api/threads', thTry(async (req, res) => {
+  const b = await body(req);
+  thOk(res, { key: TH.createThread({ botId: b.botId, title: b.title || '', projectId: b.projectId ?? null }) });
+}));
+route('PATCH', '/api/threads/:id', thTry(async (req, res, p) => { TH.updateThread(p.id, await body(req)); thOk(res); }));
+route('DELETE', '/api/threads/:id', thTry((req, res, p) => { TH.deleteThread(p.id); thOk(res); }));
+route('POST', '/api/projects', thTry(async (req, res) => {
+  const b = await body(req);
+  thOk(res, { id: TH.createProject({ name: b.name, instructions: b.instructions, ownerBotId: b.ownerBotId ?? null, members: b.members }) });
+}));
+route('PATCH', '/api/projects/:id', thTry(async (req, res, p) => { TH.updateProject(p.id, await body(req)); thOk(res); }));
+route('DELETE', '/api/projects/:id', thTry((req, res, p) => { TH.deleteProject(p.id); thOk(res); }));
+// For bots (bin/thread.mjs): list, or make a thread or project when the user asks.
+route('POST', '/api/hook/threads', thTry(async (req, res) => {
+  if (!hookAuth(req)) return json(res, 403, { error: 'forbidden' });
+  const b = await body(req);
+  const run = q('SELECT * FROM runs WHERE id=?').get(Number(b.runId));
+  if (!run || run.status !== 'running') return json(res, 400, { error: 'Run this from inside a Nimbus bot run.' });
+  const me = run.bot_id, mine = (p) => p.owner_bot_id === me || TH.projectMembers(p.id).includes(me);
+  const findProject = (name) => {
+    if (!name) return null;
+    const ps = q('SELECT * FROM projects WHERE archived=0').all().filter(mine);
+    const p = ps.find((x) => String(x.id) === String(name).replace(/^#/, '')) || ps.find((x) => x.name.toLowerCase() === String(name).toLowerCase());
+    if (!p) throw new Error(`No project "${name}" of yours. Yours: ${ps.map((x) => `${x.name} (#${x.id})`).join(', ') || 'none'}`);
+    return p;
+  };
+  if (b.action === 'list') {
+    const ps = q('SELECT * FROM projects WHERE archived=0').all().filter(mine);
+    const ts = q("SELECT * FROM threads WHERE bot_id=? AND archived=0 ORDER BY id").all(me);
+    return json(res, 200, { projects: ps.map((p) => ({ id: p.id, name: p.name, shared: p.owner_bot_id == null, folder: TH.projectFolder(p.id) })),
+      threads: [{ key: 'bot:' + me, title: 'General' }, ...ts.map((t) => ({ key: 't:' + t.id, title: t.title || 'New thread', kind: t.kind, project: t.project_id }))], current: run.thread });
+  }
+  if (b.action === 'project') {
+    const members = b.shared ? [me, ...(b.with || []).map((n) => { const t = findBot(n); if (!t) throw new Error(`No bot "${n}"`); return t.id; })] : [];
+    const id = TH.createProject({ name: b.name, instructions: b.instructions || '', ownerBotId: b.shared ? null : me, members });
+    if (b.move) { const t = TH.threadRow(run.thread); if (t?.kind === 'chat') TH.updateThread(t.id, { projectId: id }); }
+    return thOk(res, { id, folder: TH.projectFolder(id) });
+  }
+  if (b.action === 'thread') {
+    const project = findProject(b.project);
+    const key = TH.createThread({ botId: me, title: b.title || '', projectId: project?.id ?? null });
+    if (b.note) addMessage(key, me, 'text', String(b.note).slice(0, 4000), null);
+    return thOk(res, { key });
+  }
+  if (b.action === 'move') {
+    const t = TH.threadRow(run.thread);
+    if (!t || t.kind !== 'chat') throw new Error('Only threads you started with New thread can move into a project (not General, Inbox or Routines).');
+    TH.updateThread(t.id, { projectId: b.project ? findProject(b.project).id : null });
+    return thOk(res);
+  }
+  json(res, 400, { error: 'Unknown action' });
+}));
 
 // Routines
 // ---------- marketplace ----------
@@ -668,7 +736,7 @@ route('PATCH', '/api/routines/:id', async (req, res, p) => {
 route('DELETE', '/api/routines/:id', (req, res, p) => { q('DELETE FROM routines WHERE id=?').run(p.id); broadcast('state_changed', {}); json(res, 200, { ok: true }); });
 route('POST', '/api/routines/:id/run', (req, res, p) => {
   const r = q('SELECT * FROM routines WHERE id=?').get(p.id);
-  runBot({ botId: r.bot_id, thread: 'bot:' + r.bot_id, prompt: r.prompt, source: 'schedule', quiet: !!r.quiet });
+  runBot({ botId: r.bot_id, thread: TH.builtIn(r.bot_id, 'routines'), prompt: r.prompt, source: 'schedule', quiet: !!r.quiet });
   json(res, 200, { ok: true });
 });
 
@@ -677,6 +745,7 @@ function saveRoom(id, r) {
   const cur = q('SELECT * FROM rooms WHERE id=?').get(id);
   q('UPDATE rooms SET name=?, goal=?, lead_bot_id=?, bots_can_talk=? WHERE id=?').run(
     (r.name ?? cur.name).replace(/^#\s*/, ''), r.goal ?? cur.goal, r.lead_bot_id ?? cur.lead_bot_id, r.bots_can_talk === undefined ? cur.bots_can_talk : r.bots_can_talk ? 1 : 0, id);
+  if (r.project_id !== undefined) q('UPDATE rooms SET project_id=? WHERE id=?').run(r.project_id == null ? null : Number(r.project_id), id);
   if (Array.isArray(r.members)) {
     q('DELETE FROM room_members WHERE room_id=?').run(id);
     for (const b of r.members) q('INSERT OR IGNORE INTO room_members (room_id, bot_id) VALUES (?,?)').run(id, b);
@@ -790,6 +859,7 @@ const SETTINGS = [
   { key: 'agent_url', env: 'NIMBUS_AGENT_URL' }, { key: 'agent_token', env: 'NIMBUS_AGENT_TOKEN', secret: true }, { key: 'callback_url', env: 'NIMBUS_CALLBACK_URL' },
   { key: 'pve_host' }, { key: 'pve_token_id' }, { key: 'pve_token_secret', secret: true },
   { key: 'backup_target' }, { key: 'auto_compact_pct', env: 'NIMBUS_AUTO_COMPACT_PCT' },
+  { key: 'thread_limit' }, { key: 'usage_guard_pct' },
   { key: 'trusted_bots', env: 'NIMBUS_TRUSTED_BOTS' }, { key: 'sandbox', env: 'NIMBUS_SANDBOX' }
 ];
 route('GET', '/api/settings', (req, res) => {
@@ -803,6 +873,8 @@ route('PUT', '/api/settings', async (req, res) => {
     if (b[s.key] === undefined || (s.secret && b[s.key] === '__saved__')) continue;
     const v = String(b[s.key]).trim();
     if (s.key === 'auto_compact_pct' && v && !(Number(v) >= 0 && Number(v) <= 95)) return json(res, 400, { error: 'Auto-compact must be 0 (off) to 95' });
+    if (s.key === 'thread_limit' && v && !/^[123]$/.test(v)) return json(res, 400, { error: 'Threads at once per bot: 1, 2 or 3' });
+    if (s.key === 'usage_guard_pct' && v && !(Number(v) >= 0 && Number(v) <= 90)) return json(res, 400, { error: 'Usage guard: 0 to 90 (% of the 5-hour limit left)' });
     if (s.key === 'trusted_bots' && v && !/^\d+([\s,]+\d+)*$/.test(v)) return json(res, 400, { error: 'Trusted bots: bot numbers separated by commas, e.g. 3' });
     if (s.key === 'sandbox' && v && !/^(off|all|-?\d+)([\s,]+-?\d+)*$/i.test(v.replace(/^all\b/i, 'all'))) return json(res, 400, { error: 'Sandbox: off, all, bot numbers (e.g. 5,9), or all,-3 for every bot but #3' });
     if (s.key === 'backup_target' && v && !/^[\w.-]+@[\w.-]+:\/[^\s]*$/.test(v)) return json(res, 400, { error: 'Backup target should look like user@host:/path' });
@@ -1073,7 +1145,7 @@ route('POST', '/api/hook/ask', async (req, res) => {
   const chain = askChain(Number(fromRun));
   if (chain.includes(target.id)) return json(res, 409, { error: `${target.name} is waiting on your answer, so it can't take a message now. Put what you want to tell it in your reply.` });
   if (chain.length > MAX_ASK_DEPTH) return json(res, 429, { error: 'Too many bots are already waiting on each other. Answer with what you have.' });
-  const thread = 'bot:' + target.id;
+  const thread = TH.builtIn(target.id, 'inbox');
   addMessage(thread, 'system', 'note', `📨 ${from.name}: ${String(text).trim()}`);
   const runId = runBot({ botId: target.id, thread, source: from.name, parentRun: Number(fromRun), depth: chain.length,
     prompt: `Message from ${from.name}, another Nimbus bot (not the user):\n\n${String(text).trim()}\n\n${wait ? `Your reply is sent back to ${from.name}, so answer what it needs.` : `${from.name} isn't waiting for a reply; act on this if it's in your area.`}` });

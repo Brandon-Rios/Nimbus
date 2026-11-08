@@ -11,6 +11,8 @@ import { broadcast } from './events.js';
 import { PLUGINS } from './catalog.js';
 import { sandboxed, wrap, botEnv } from './sandbox.js';
 import { claudeEnv } from './claudeauth.js';
+import { getPlanUsage } from './planusage.js';
+import { threadContext } from './threads.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HOOK = path.join(HERE, 'hooks', 'approval-hook.js');
@@ -124,7 +126,7 @@ function remoteRun(bot, dir, runId, args, prompt, env) {
 // Also sent over the LAN to bot computers, so it must be unguessable.
 export const HOOK_TOKEN = process.env.NIMBUS_HOOK_TOKEN || randomBytes(24).toString('hex');
 
-const queues = new Map();      // botId -> promise chain (one run at a time per bot)
+const queues = new Map();      // 'botId|thread' -> promise chain (one run at a time per thread)
 const procs = new Map();       // runId -> child process
 export const botStatus = new Map(); // botId -> { state, label }
 
@@ -235,7 +237,7 @@ function mcpServers(botId, remote = false) {
 // ---------- the main thing: run a bot ----------
 export function runBot({ botId, thread, prompt, depth = 0, source = 'user', parentRun = null, quiet = false, msgId = null, msgText = '' }) {
   botId = Number(botId);
-  const busy = !!q("SELECT 1 FROM runs WHERE bot_id=? AND status IN ('running','queued')").get(botId);
+  const busy = !!q("SELECT 1 FROM runs WHERE bot_id=? AND thread=? AND status IN ('running','queued')").get(botId, thread) || (active.get(botId) || 0) >= threadLimit();
   const run = q('INSERT INTO runs (bot_id, thread, prompt, status, parent_run) VALUES (?,?,?,?,?)').run(botId, thread, redact(prompt), 'queued', parentRun);
   const runId = Number(run.lastInsertRowid);
   if (msgId) {
@@ -245,10 +247,61 @@ export function runBot({ botId, thread, prompt, depth = 0, source = 'user', pare
     if (busy) setQueued(msgId, 1);
   }
   if (!botStatus.get(botId) || botStatus.get(botId).state === 'idle') setStatus(botId, 'queued', 'Queued');
-  const prev = queues.get(botId) || Promise.resolve();
-  const next = prev.catch(() => {}).then(() => execute({ runId, botId, thread, prompt, depth, source, quiet }));
-  queues.set(botId, next);
+  enqueue({ runId, botId, thread, prompt, depth, source, quiet });
   return runId;
+}
+
+// ---------- who runs when ----------
+// Runs in the same thread go one after another. Different threads of one bot may run side by side, up to the
+// "threads at once" setting (default 2), but only for your own messages and only while the Claude plan has
+// room (below the usage guard, default 15% left of the 5-hour window, everything takes turns again).
+// Routines, requests from other bots and auto-compacts always wait until the bot is free.
+const active = new Map(); // botId -> runs holding a slot
+const waiting = []; // { botId, lim, go }
+export const threadLimit = () => Math.min(3, Math.max(1, Number(getSetting('thread_limit')) || 2));
+const guardPct = () => { const v = String(getSetting('usage_guard_pct') ?? '').trim(); return v === '' ? 15 : Math.min(90, Math.max(0, Number(v) || 0)); };
+async function planHasRoom() {
+  try {
+    const u = await getPlanUsage();
+    const w = u.ok && u.windows.find((x) => x.label === '5-hour limit');
+    return !w || 100 - w.used > guardPct();
+  } catch { return true; }
+}
+async function acquire(botId, source) {
+  const mine = source === 'user' || source === 'the user';
+  const lim = mine && threadLimit() > 1 && await planHasRoom() ? threadLimit() : 1;
+  if ((active.get(botId) || 0) < lim) { active.set(botId, (active.get(botId) || 0) + 1); return; }
+  await new Promise((go) => waiting.push({ botId, lim, go }));
+}
+function release(botId) {
+  active.set(botId, Math.max(0, (active.get(botId) || 0) - 1));
+  for (let i = 0; i < waiting.length; i++) {
+    const w = waiting[i];
+    if (w.botId !== botId || (active.get(botId) || 0) >= w.lim) continue;
+    waiting.splice(i--, 1);
+    active.set(botId, (active.get(botId) || 0) + 1);
+    w.go();
+  }
+  refreshStatus(botId);
+}
+function enqueue(job) {
+  const key = job.botId + '|' + job.thread;
+  const prev = queues.get(key) || Promise.resolve();
+  const next = prev.catch(() => {}).then(async () => {
+    if (q('SELECT status FROM runs WHERE id=?').get(job.runId)?.status !== 'queued') return refreshStatus(job.botId); // cancelled or merged while waiting
+    await acquire(job.botId, job.source);
+    try { await execute(job); } finally { release(job.botId); }
+  });
+  queues.set(key, next);
+  next.catch(() => {}).finally(() => { if (queues.get(key) === next) queues.delete(key); });
+}
+// The bot's status line from what's actually running: "Working in 2 threads", "Queued", "Idle".
+function refreshStatus(botId) {
+  const running = q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='running'").get(botId).n;
+  const queued = q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='queued'").get(botId).n;
+  if (running > 1) setStatus(botId, 'working', `Working in ${running} threads`);
+  else if (running === 1) { if (botStatus.get(botId)?.state !== 'working' || /threads$/.test(botStatus.get(botId)?.label || '')) setStatus(botId, 'working', 'Working…'); }
+  else setStatus(botId, queued ? 'queued' : 'idle', queued ? 'Queued' : 'Idle');
 }
 
 // ---------- message queue ----------
@@ -267,8 +320,7 @@ export function cancelQueued(msgId) {
   const [runId, p] = hit;
   pending.delete(runId);
   q("UPDATE runs SET status='stopped', ended_at=unixepoch() WHERE id=? AND status='queued'").run(runId);
-  const stillQueued = q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='queued'").get(p.botId).n;
-  if (!q("SELECT 1 FROM runs WHERE bot_id=? AND status='running'").get(p.botId)) setStatus(p.botId, stillQueued ? 'queued' : 'idle', stillQueued ? 'Queued' : 'Idle');
+  refreshStatus(p.botId);
   return true;
 }
 export function editQueued(msgId, text) {
@@ -308,6 +360,8 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
     const session = !isRoom && source !== 'schedule'
       ? q('SELECT session_id FROM sessions WHERE bot_id=? AND thread=?').get(botId, thread)?.session_id
       : null;
+    // Thread and project context goes in once, when a conversation starts; resumed sessions already have it.
+    if (!session && !isRoom && thread.startsWith('t:')) fullPrompt = threadContext(thread, botId) + fullPrompt;
 
     // "/compact": ask Claude Code to summarize this chat's history so it takes far less room (memory and
     // the gist are kept). Only chats with a running conversation have something to compact.
@@ -316,8 +370,6 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
       if (isRoom || !session) {
         q("UPDATE runs SET status='done', started_at=unixepoch(), ended_at=unixepoch() WHERE id=?").run(runId);
         addMessage(thread, 'system', 'note', isRoom ? 'Compacting works in one-to-one chats, not group chats.' : 'Nothing to compact yet: this chat has no conversation history.');
-        const stillQueued = q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='queued'").get(botId).n;
-        setStatus(botId, stillQueued ? 'queued' : 'idle', stillQueued ? 'Queued' : 'Idle');
         return resolve();
       }
       fullPrompt = prompt.trim();
@@ -338,7 +390,8 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
     if (session) args.push('--resume', session);
 
     q("UPDATE runs SET status='running', started_at=unixepoch(), effort=? WHERE id=?").run(bot.effort, runId);
-    setStatus(botId, 'working', isRoom ? 'Working in a group chat' : 'Working…');
+    if (q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='running'").get(botId).n > 1) refreshStatus(botId);
+    else setStatus(botId, 'working', isRoom ? 'Working in a group chat' : 'Working…');
 
     const traceBody = { steps: [], status: 'running', effort: bot.effort, started: Date.now(), source, compacting };
     // Context window size isn't known until Claude Code finishes; use the last one seen in this chat so the
@@ -465,8 +518,6 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
         addMessage(thread, 'system', 'note', compacted
           ? `🗜 Compacted this chat: ${fmtK(compacted.pre)} → ${fmtK(compacted.post)} tokens. ${bot.name} keeps the gist and its memory.`
           : `Couldn’t compact this chat${stderr.trim() ? ': ' + stderr.trim().split('\n').pop() : '.'}`);
-        const stillQueued = q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='queued'").get(botId).n;
-        setStatus(botId, stillQueued ? 'queued' : 'idle', stillQueued ? 'Queued' : 'Idle');
         return resolve();
       }
       if (compacted && !compacting) addMessage(thread, 'system', 'note', `🗜 The chat was getting long, so Claude compacted it (${fmtK(compacted.pre)} → ${fmtK(compacted.post)} tokens).`);
@@ -490,9 +541,6 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
         addMessage(thread, 'system', 'note', `Context is ${Math.round(traceBody.context / win * 100)}% full, so Nimbus is compacting this chat.`);
         runBot({ botId, thread, prompt: '/compact', source: 'auto-compact' });
       }
-
-      const stillQueued = q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='queued'").get(botId).n;
-      setStatus(botId, stillQueued ? 'queued' : 'idle', stillQueued ? 'Queued' : 'Idle');
 
       // Group chat handoffs: bots @mentioning other bots wakes them up.
       if (isRoom && msg.kind === 'text' && depth < MAX_HANDOFF_DEPTH) {
@@ -529,9 +577,7 @@ export function recoverRuns() {
     pending.set(r.id, p);
     q('UPDATE messages SET queued=1 WHERE id=?').run(p.msgId);
     setStatus(p.botId, 'queued', 'Queued');
-    const prev = queues.get(p.botId) || Promise.resolve();
-    const next = prev.catch(() => {}).then(() => execute({ runId: r.id, botId: p.botId, thread: p.thread, prompt: p.text + p.suffix, depth: 0, source: 'user', quiet: false }));
-    queues.set(p.botId, next);
+    enqueue({ runId: r.id, botId: p.botId, thread: p.thread, prompt: p.text + p.suffix, depth: 0, source: 'user', quiet: false });
   }
   q("UPDATE approvals SET status='expired' WHERE status='pending'").run();
   for (const m of q("SELECT * FROM messages WHERE kind='trace' AND body LIKE '%\"status\":\"running\"%'").all()) {

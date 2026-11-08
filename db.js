@@ -117,6 +117,16 @@ function filesSection() {
 - Comments from the user show in the outline; answer with comment, then resolve. Export with export <doc> docx|pdf.
 `;
 }
+// Kept to a few lines: it's in every bot's brief, so it's paid for on every new conversation.
+function threadsSection() {
+  const t = path.resolve(path.dirname(new URL(import.meta.url).pathname), 'bin', 'thread.mjs');
+  return `
+## Threads and projects
+- Your chats with the user are separate threads (General, ones they start, Inbox for bot requests, Routines). Only make a
+  new thread or project when the user asks. Tool: node ${t} (no args for help): list | new "<title>" [--project P] |
+  project "<name>" [--instructions "..."] [--shared "bot,bot"] [--move] | move "<project>".
+`;
+}
 function teamSection(bot, remote) {
   // Bots on their own computer get a copy of the script in their work folder (see remoteRun in runner.js).
   const ask = remote ? '/config/work/ask-bot.mjs' : ASK_BOT;
@@ -168,7 +178,7 @@ ${bot.instructions || '(none yet)'}
 - When the user tells you a preference or rule, add one line to MEMORY.md in this folder.
 - This folder is your workspace. Keep notes and files here.
 
-${remote ? '' : filesSection()}
+${remote ? '' : filesSection()}${remote ? '' : threadsSection()}
 ## Your team
 ${teamSection(bot, remote)}
 ${homelabSection()}

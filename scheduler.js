@@ -3,6 +3,7 @@
 import { q } from './db.js';
 import { runBot, addMessage } from './runner.js';
 import { getPlanUsage } from './planusage.js';
+import { builtIn } from './threads.js';
 
 function fieldMatches(field, value, min, max) {
   return field.split(',').some((part) => {
@@ -61,10 +62,10 @@ export function startScheduler() {
     for (const r of due) {
       q('UPDATE routines SET last_run=unixepoch() WHERE id=?').run(r.id);
       if (fiveHour != null && fiveHour >= GUARD_PCT) {
-        addMessage('bot:' + r.bot_id, 'system', 'note', `Skipped a scheduled routine: your Claude plan's 5-hour limit is ${Math.round(fiveHour)}% used (guardrail: ${GUARD_PCT}%).`);
+        addMessage(builtIn(r.bot_id, 'routines'), 'system', 'note', `Skipped a scheduled routine: your Claude plan's 5-hour limit is ${Math.round(fiveHour)}% used (guardrail: ${GUARD_PCT}%).`);
         continue;
       }
-      runBot({ botId: r.bot_id, thread: 'bot:' + r.bot_id, prompt: r.prompt, source: 'schedule', quiet: !!r.quiet });
+      runBot({ botId: r.bot_id, thread: builtIn(r.bot_id, 'routines'), prompt: r.prompt, source: 'schedule', quiet: !!r.quiet });
     }
   }, 15000).unref();
 }
