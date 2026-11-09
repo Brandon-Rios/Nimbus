@@ -632,7 +632,7 @@ document.addEventListener('contextmenu', (e) => {
   el.addEventListener('click', (ev) => {
     const a = ev.target.closest('[data-bm]')?.dataset.bm; if (!a) return;
     ev.stopPropagation();
-    if (a === 'move') return moveMenu(b, el.getBoundingClientRect());
+    if (a === 'move') return moveMenu('bot:' + b.id, b.name, el.getBoundingClientRect());
     closePopover();
     if (a === 'pane') return paneCmd('split-right', { key: 'bot:' + b.id });
     if (a === 'thread') return newThread(b.id);
@@ -643,9 +643,9 @@ document.addEventListener('contextmenu', (e) => {
   });
 });
 // Move to group: pick a group, take it out of its group, or make a new group for it.
-function moveMenu(b, r) {
-  const key = 'bot:' + b.id, groups = S.data.sideGroups || [], cur = groups.find((g) => g.keys.includes(key));
-  const el = menuAt(r.right - 4, r.top, `<div class="ctx-title"><span>Move ${esc(b.name)} to…</span></div>
+function moveMenu(key, name, r) {
+  const groups = S.data.sideGroups || [], cur = groups.find((g) => g.keys.includes(key));
+  const el = menuAt(r.right - 4, r.top, `<div class="ctx-title"><span>Move ${esc(name)} to…</span></div>
     ${groups.map((g) => `<button data-mg="${g.id}">${g === cur ? ICON.check : '<i class="ctx-gap"></i>'}<span>${esc(g.name)}</span></button>`).join('')}
     ${groups.length ? '<hr>' : ''}
     ${cur ? `<button data-mg="">${'<i class="ctx-gap"></i>'}<span>No group (top of the list)</span></button>` : ''}
@@ -659,14 +659,14 @@ function moveMenu(b, r) {
     saveGroups();
   });
 }
-function renameBot(b) {
-  const el = modal(`<div class="modal-head"><h2>Rename bot</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+function renameBot(b, what = 'bot', url = `/api/bots/${b.id}`) {
+  const el = modal(`<div class="modal-head"><h2>Rename ${what}</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
     <label class="field">New name<input id="rn-name" value="${esc(b.name)}" maxlength="60"></label>
     <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="rn-save">Rename</button></div>`);
   const input = $('#rn-name', el); setTimeout(() => input.select(), 40);
   const save = async () => {
-    const name = input.value.trim(); if (!name) return toast('Give the bot a name');
-    try { await api(`/api/bots/${b.id}`, { method: 'PATCH', body: { name } }); closeModal(); await refreshState(); renderSide(); if (S.current?.id === b.id) renderMain(); } catch (err) { toast(err.message); }
+    const name = input.value.trim(); if (!name) return toast(`Give the ${what} a name`);
+    try { await api(url, { method: 'PATCH', body: { name } }); closeModal(); await refreshState(); renderSide(); if (S.current?.id === b.id) renderMain(); } catch (err) { toast(err.message); }
   };
   $('#rn-save', el).onclick = save;
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
@@ -688,6 +688,54 @@ function deleteBot(b) {
       await api(`/api/bots/${b.id}`, { method: 'DELETE' }); closeModal();
       if (S.current?.id === b.id) { S.current = null; history.replaceState(null, '', '#'); }
       await refreshState(); renderSide(); renderMain(); toast(`${b.name} was deleted`);
+    } catch (err) { toast(err.message); }
+  };
+}
+
+// Right-click a group chat in the sidebar.
+document.addEventListener('contextmenu', (e) => {
+  const item = e.target.closest('.side-list .side-item[data-key^="room:"]');
+  if (!item || drag?.started) return;
+  e.preventDefault();
+  const r = room(item.dataset.key.slice(5)); if (!r) return;
+  const key = 'room:' + r.id, inGroup = (S.data.sideGroups || []).find((g) => g.keys.includes(key));
+  const el = menuAt(e.clientX, e.clientY, `
+    <div class="ctx-title">${roomAvatar(r, 20)}<span>${esc(r.name)}</span></div>
+    <button data-rm="pane">${ICON.split}<span>Open in a new pane</span></button>
+    <hr>
+    <button data-rm="rename">${ICON.compose}<span>Rename…</span></button>
+    <button data-rm="move">${ICON.grid}<span>Move to group</span><span class="ctx-sub">${esc(inGroup ? inGroup.name : 'None')} ›</span></button>
+    <button data-rm="settings">${ICON.gear}<span>Group chat settings</span></button>
+    <hr>
+    <button data-rm="delete" class="danger">${ICON.close}<span>Delete group chat…</span></button>`);
+  el.addEventListener('click', (ev) => {
+    const a = ev.target.closest('[data-rm]')?.dataset.rm; if (!a) return;
+    ev.stopPropagation();
+    if (a === 'move') return moveMenu(key, r.name, el.getBoundingClientRect());
+    closePopover();
+    if (a === 'pane') return paneCmd('split-right', { key });
+    if (a === 'rename') return renameBot(r, 'group chat', `/api/rooms/${r.id}`);
+    if (a === 'settings') return roomModal(r);
+    if (a === 'delete') return deleteRoom(r);
+  });
+});
+// Same two steps as deleting a bot: confirm, then type the chat's name.
+function deleteRoom(r) {
+  const el = modal(`<div class="modal-head"><h2>Delete ${esc(r.name)}?</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <div id="del-step1"><p>This removes the group chat. The bots in it are not affected.</p>
+      <div class="modal-foot"><button class="btn" data-close>Keep chat</button><button class="btn danger" id="del-next">Yes, continue</button></div></div>
+    <div id="del-step2" hidden><p>To confirm, type the chat's name: <b>${esc(r.name)}</b></p>
+      <label class="field"><input id="del-name" autocomplete="off" placeholder="${esc(r.name)}"></label>
+      <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn danger" id="del-go" disabled>Delete forever</button></div></div>`);
+  const input = $('#del-name', el), go = $('#del-go', el);
+  $('#del-next', el).onclick = () => { $('#del-step1', el).hidden = true; $('#del-step2', el).hidden = false; input.focus(); };
+  input.addEventListener('input', () => { go.disabled = input.value.trim() !== r.name.trim(); });
+  go.onclick = async () => {
+    if (go.disabled) return;
+    try {
+      await api(`/api/rooms/${r.id}`, { method: 'DELETE' }); closeModal();
+      if (S.current?.type === 'room' && S.current.id === r.id) { S.current = null; history.replaceState(null, '', '#'); }
+      await refreshState(); renderSide(); renderMain(); toast(`${r.name} was deleted`);
     } catch (err) { toast(err.message); }
   };
 }
@@ -1718,9 +1766,7 @@ function roomModal(r) {
   });
   el.addEventListener('click', async (e) => {
     if (e.target.closest('[data-close]')) closeModal();
-    if (e.target.id === 'r-del' && confirm(`Delete ${r.name}?`)) {
-      await api(`/api/rooms/${r.id}`, { method: 'DELETE' }); closeModal(); S.current = null; await refreshState(); renderMain();
-    }
+    if (e.target.id === 'r-del') { closeModal(); return deleteRoom(r); }
     if (e.target.id === 'r-save') {
       const payload = { name: $('#r-name', el).value.trim(), goal: $('#r-goal', el).value.trim(), members: [...members], lead_bot_id: lead, bots_can_talk: $('#r-talk', el).checked, ...($('#r-proj', el) ? { project_id: $('#r-proj', el).value ? Number($('#r-proj', el).value) : null } : {}) };
       if (!payload.name) return toast('Give the chat a name');
