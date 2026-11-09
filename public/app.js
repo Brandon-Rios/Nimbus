@@ -2,6 +2,7 @@
 import { attachAutocorrect } from './autocorrect.js';
 import { THEMES, resolveTheme, applyThemeVars } from './themes.js';
 import { startVoice, voiceMessage } from './voice.js';
+import { LANGS, LANG_NAMES, uiLang, setUiLang, startI18n, setI18nNames } from './i18n.js';
 import { startRecording, stopRecording, cancelRecording, isRecording, browserDictation } from './dictation.js';
 const $ = (s, el = document) => el.querySelector(s);
 // Split panes: an extra pane is this same app in a frame (?pane=<id>), showing one chat without the sidebar.
@@ -894,7 +895,7 @@ function renderMessages() {
     const th = threadOf(threadKey());
     if (th && th.kind === 'chat') return `<div class="empty">${avatar(b, 72)}<h2>${esc(th.title || 'New thread')}</h2><p>A fresh conversation with ${esc(b.name)}. It still knows its role and memory${th.project_id ? `, and reads the “${esc(projectOf(th.project_id)?.name || '')}” project instructions` : ''}.</p></div>`;
     if (th) return `<div class="empty">${th.kind === 'inbox' ? TI.inbox : ICON.clock}<h2>${th.kind === 'inbox' ? 'Inbox' : 'Routines'}</h2><p>${th.kind === 'inbox' ? `Requests from other bots to ${esc(b.name)} land here, with its answers.` : `${esc(b.name)}’s scheduled routines post here.`}</p></div>`;
-    return `<div class="empty">${isBot ? avatar(b, 72) : roomAvatar(room(S.current.id), 72)}<h2>${esc(isBot ? b.name : room(S.current.id).name)}</h2><p>${isBot ? esc(b.role || 'Give this bot a task. It’ll ask before sending, paying, deleting or merging.') : 'Post a goal. The lead bot splits the work, and bots @mention each other to hand things off.'}</p></div>`;
+    return `<div class="empty">${isBot ? avatar(b, 72) : roomAvatar(room(S.current.id), 72)}<h2>${esc(isBot ? b.name : room(S.current.id).name)}</h2><p${isBot && b.role ? ' class="no-i18n"' : ''}>${isBot ? esc(b.role || 'Give this bot a task. It’ll ask before sending, paying, deleting or merging.') : 'Post a goal. The lead bot splits the work, and bots @mention each other to hand things off.'}</p></div>`;
   }
   return S.messages.map((m, i) => renderMessage(m, S.messages[i - 1])).join('');
 }
@@ -987,7 +988,8 @@ const SLASH = [
   ['/project', '', 'Move this thread into a project', () => { const t = threadOf(threadKey()); if (t?.kind !== 'chat') return toast('Start a thread with /thread first: General, Inbox and Routines stay where they are'); moveThreadModal(t); }],
   ['/browser', '', 'Open the bot’s browser', (a, b) => openBrowser(b.id)],
   ['/split', '[down]', 'Split the view into another pane', (a) => paneCmd(/^d/i.test(a) ? 'split-down' : 'split-right')],
-  ['/shortcuts', '', 'Keyboard shortcuts', () => EMBED ? paneCmd('shortcuts') : shortcutsModal()]
+  ['/shortcuts', '', 'Keyboard shortcuts', () => EMBED ? paneCmd('shortcuts') : shortcutsModal()],
+  ['/api-tools', '[scan]', 'This bot’s API tools: quick commands that run without Claude (scan = have the bot set them up)', (a, b) => /^scan/i.test(a) ? apiToolsScan(b) : apiToolsModal(b)]
 ];
 const botCmds = new Map(); // bot id -> { at, list } (skills and custom commands, fetched when you type /)
 function loadBotCmds(id) {
@@ -1003,27 +1005,75 @@ function slashHint(v) {
   const q = v.toLowerCase();
   const items = !show ? [] : [
     ...SLASH.filter(([c]) => c.startsWith(q)).map(([c, a, d]) => ({ c, a, d })),
-    ...loadBotCmds(S.current.id).filter((x) => x.cmd.toLowerCase().includes(q.slice(1)) && !SLASH.some(([c]) => c === x.cmd)).map((x) => ({ c: x.cmd, a: '', d: x.desc, src: x.source }))
+    ...loadBotCmds(S.current.id).filter((x) => x.cmd.toLowerCase().includes(q.slice(1)) && !SLASH.some(([c]) => c === x.cmd)).map((x) => ({ c: x.cmd, a: x.args || '', d: x.desc, src: x.source, api: x.api }))
   ].slice(0, 40);
   if (!items.length) return box?.remove();
   if (!box) { box = document.createElement('div'); box.id = 'slash-hint'; box.className = 'slash-hint'; $('.composer').prepend(box); }
-  box.innerHTML = items.map((i) => `<button type="button" data-slash="${esc(i.c)}" data-args="${i.a ? 1 : ''}"><b>${esc(i.c)}</b>${i.a ? `<i>${esc(i.a)}</i>` : ''}<span>${esc(i.d)}</span>${i.src ? `<em>${esc(i.src)}</em>` : ''}</button>`).join('');
+  box.innerHTML = items.map((i) => `<button type="button" data-slash="${esc(i.c)}" data-args="${i.a ? 1 : ''}" data-api="${i.api ? 1 : ''}"><b>${esc(i.c)}</b>${i.a ? `<i>${esc(i.a)}</i>` : ''}<span>${esc(i.d)}</span>${i.src ? `<em>${esc(i.src)}</em>` : ''}</button>`).join('');
 }
 document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-slash]'); if (!b) return;
   const ta = $('#msg'); $('#slash-hint')?.remove();
   const local = SLASH.find(([c]) => c === b.dataset.slash);
   // Commands that take words (and the bot's skills, which usually do) wait for you to type them.
-  if (b.dataset.args || !local) { ta.value = b.dataset.slash + ' '; ta.focus(); autosize(ta); return; }
+  if (b.dataset.args || (!local && !b.dataset.api)) { ta.value = b.dataset.slash + ' '; ta.focus(); autosize(ta); return; }
   ta.value = b.dataset.slash; $('#composer').requestSubmit();
 });
 // Runs a Nimbus command; returns true if the text was one (so it isn't sent to the bot).
 function runSlash(text) {
   const m = text.match(/^(\/[\w-]+)(?:\s+([\s\S]*))?$/); if (!m || S.current?.type !== 'bot') return false;
   const cmd = SLASH.find(([c]) => c === m[1].toLowerCase());
+  const tool = !cmd && (botCmds.get(S.current.id)?.list || []).find((x) => x.api && x.cmd === m[1].toLowerCase());
+  if (tool) { runApiTool(bot(S.current.id), tool.cmd.slice(1), (m[2] || '').trim()).catch((err) => toast(err.message)); return true; }
   if (!cmd || !cmd[3]) return false;
   Promise.resolve(cmd[3]((m[2] || '').trim(), bot(S.current.id))).catch((err) => toast(err.message));
   return true;
+}
+// ---------- API tools: the bot's own quick commands (apitools.js) ----------
+async function apiToolsModal(b) {
+  const { tools } = await api(`/api/bots/${b.id}/api-tools`);
+  const el = modal(`<div class="modal-head"><h2>${esc(b.name)}’s API tools</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <p class="muted">Quick commands for the services ${esc(b.name)} can reach. They run directly on the server: no Claude, no plan usage. Type them like any slash command. You approve each script once; ones that change things ask every time.</p>
+    ${tools.length ? `<div class="api-tools">${tools.map((t) => `<div class="api-tool">
+      <div class="at-row"><b>/${esc(t.name)}</b>${t.args ? ` <i class="muted">${esc(t.args)}</i>` : ''}<span class="muted at-desc">${esc(t.desc)}</span>
+        ${t.changes ? '<span class="at-badge warn">changes things</span>' : ''}${t.approved ? '' : '<span class="at-badge">needs approval</span>'}</div>
+      <details><summary>Script</summary><pre class="no-i18n">${esc(t.run)}</pre></details>
+      <div class="at-btns">${t.approved ? '' : `<button class="btn small" data-at-ok="${esc(t.name)}">Approve</button>`}<button class="btn small" data-at-run="${esc(t.name)}" ${t.args ? 'data-at-args="1"' : ''}>Run</button></div>
+    </div>`).join('')}</div>` : `<p>${esc(b.name)} has no API tools yet.</p>`}
+    <div class="modal-foot"><button class="btn" data-close>Close</button><button class="btn primary" id="at-scan">${tools.length ? 'Rescan and update' : 'Set them up'}</button></div>`, { wide: true });
+  el.addEventListener('click', async (e) => {
+    const ok = e.target.closest('[data-at-ok]'), run = e.target.closest('[data-at-run]');
+    if (ok) { await api(`/api/bots/${b.id}/api-tools/${ok.dataset.atOk}/approve`, { method: 'POST' }); loadBotCmds(b.id); return apiToolsModal(b); }
+    if (run) {
+      closeModal();
+      if (run.dataset.atArgs) { const ta = $('#msg'); ta.value = '/' + run.dataset.atRun + ' '; ta.focus(); autosize(ta); return; }
+      return runApiTool(b, run.dataset.atRun, '').catch((err) => toast(err.message));
+    }
+    if (e.target.id === 'at-scan') { closeModal(); apiToolsScan(b); }
+  });
+}
+async function apiToolsScan(b) {
+  await api(`/api/bots/${b.id}/api-tools-scan`, { method: 'POST', body: { thread: threadKey() } });
+  botCmds.delete(b.id);
+  toast(`${b.name} is setting up its API tools. When it’s done, type / to see them.`);
+}
+async function runApiTool(b, name, args) {
+  const { tools } = await api(`/api/bots/${b.id}/api-tools`);
+  const t = tools.find((x) => x.name === name); if (!t) throw new Error(`No API tool /${name}`);
+  if (!t.approved || t.changes) {
+    const go = await new Promise((resolve) => {
+      const el = modal(`<div class="modal-head"><h2>${t.approved ? `Run /${esc(name)}?` : `Approve /${esc(name)}?`}</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+        <p>${t.approved ? 'This tool changes things.' : `${esc(b.name)} wrote this tool. Check what it runs before it can run (you’re asked again if the script changes).`}</p>
+        <p class="muted">${esc(t.desc)}${args ? ` · with: <b>${esc(args)}</b>` : ''}</p>
+        <pre class="at-script no-i18n">${esc(t.run)}</pre>
+        <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn ${t.changes ? 'danger' : 'primary'}" id="at-go">${t.approved ? 'Run it' : 'Approve and run'}</button></div>`);
+      $('#at-go', el).onclick = () => { resolve(true); closeModal(); };
+      el.closest('.scrim').addEventListener('click', (e) => { if (e.target.closest('[data-close]') || e.target.classList.contains('scrim')) resolve(false); });
+    });
+    if (!go) return;
+    if (!t.approved) await api(`/api/bots/${b.id}/api-tools/${name}/approve`, { method: 'POST' });
+  }
+  await api(`/api/bots/${b.id}/api-tools/${name}/run`, { method: 'POST', body: { args, thread: threadKey() } });
 }
 function slashHelp() {
   const mine = botCmds.get(S.current?.id)?.list || [];
@@ -1916,6 +1966,28 @@ async function botPluginsModal(b, fresh = false) {
   });
 }
 
+// Language: the app's screens (this device), what dictation listens for and what bots reply in (whole server).
+async function languageModal() {
+  const cur = await api('/api/language').catch(() => ({ speech: '', reply: '' }));
+  const ui = uiLang();
+  const opts = (sel, first) => first + LANGS.filter(([c]) => c).map(([c, n]) => `<option value="${c}" ${sel === c ? 'selected' : ''}>${esc(n)} (${LANG_NAMES[c]})</option>`).join('');
+  const el = modal(`
+    <div class="modal-head"><h2>Language</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <label class="field">App language (this device)<select id="lg-ui">${LANGS.map(([c, n]) => `<option value="${c}" ${ui === c ? 'selected' : ''}>${esc(n)}${c ? ` (${LANG_NAMES[c]})` : ''}</option>`).join('')}</select>
+      <span class="hint">Menus, buttons and settings. Translated on your server, so the first look at each screen may show English for a moment.</span></label>
+    <label class="field">Bots reply in<select id="lg-reply">${opts(Object.entries(LANG_NAMES).find(([, n]) => n === cur.reply)?.[0] || '', '<option value="">The language you write in</option>')}</select>
+      <span class="hint">Applies to every bot.</span></label>
+    <label class="field">Dictation and voice chat listen for<select id="lg-speech"><option value="">English only (fastest)</option><option value="auto" ${cur.speech === 'auto' ? 'selected' : ''}>Any language (detects it)</option>${LANGS.filter(([c]) => c).map(([c, n]) => `<option value="${c}" ${cur.speech === c ? 'selected' : ''}>${esc(n)} (${LANG_NAMES[c]})</option>`).join('')}</select>
+      <span class="hint">${cur.multilingual ? 'Picking one language is more accurate than “Any language”.' : 'Other languages need the multilingual speech model on the server (ggml-small.bin).'} For a bot's spoken voice, pick a voice in that language in its settings.</span></label>
+    <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="lg-save">Save</button></div>`);
+  $('#lg-save', el).onclick = async () => {
+    const code = $('#lg-reply', el).value;
+    try { await api('/api/language', { method: 'PUT', body: { speech: $('#lg-speech', el).value, reply: code ? LANG_NAMES[code] : '' } }); } catch (err) { return toast(err.message); }
+    const next = $('#lg-ui', el).value;
+    if (next !== ui) return setUiLang(next);
+    closeModal(); toast('Saved');
+  };
+}
 function appearanceModal() {
   const p = getPrefs();
   const ACCENTS = ['#3b82f6', '#7c5cf5', '#e84fa0', '#e2475f', '#f08a3c', '#f5c542', '#1f9d6b', '#3fb6a8', '#22d3ee'];
@@ -3000,7 +3072,7 @@ document.addEventListener('click', async (e) => {
     case 'docs': return docsModal();
     case 'artifacts': return openArtifacts();
     case 'files': return filesModal();
-    case 'user-menu': e.stopPropagation(); return popover(t, [['appearance', 'Appearance', ICON.gear], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['docs', 'Documents', ICON.book], ['claude', S.data.claude?.mode === 'none' ? 'Connect Claude ⚠' : 'Claude account', ICON.plug], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
+    case 'user-menu': e.stopPropagation(); return popover(t, [['appearance', 'Appearance', ICON.gear], ['language', 'Language', ICON.globe], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['docs', 'Documents', ICON.book], ['claude', S.data.claude?.mode === 'none' ? 'Connect Claude ⚠' : 'Claude account', ICON.plug], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
     case 'new-bot': return botModal();
     case 'edit-bot': return botModal(cur);
     case 'new-room': return roomModal();
@@ -3012,6 +3084,7 @@ document.addEventListener('click', async (e) => {
     case 'market': $('#side').classList.remove('open'); return marketModal();
     case 'cc-plugins': $('#side').classList.remove('open'); return ccPluginsModal();
     case 'appearance': return appearanceModal();
+    case 'language': return languageModal();
     case 'attach': return $('#file-pick').click();
     case 'dictate': return toggleDictation(t);
     case 'voice': { const b = bot(S.current?.id); return b && startVoice({ api, thread: threadKey(), botName: b.name, avatarHtml: avatar(b, 28), character: { svg: critter(b.color, outfit(b)), color: b.color, ...outfit(b) }, toast }); }
@@ -3379,6 +3452,8 @@ applyTheme();
   else if (matchMedia('(min-width: 761px)').matches && (first || S.data.bots[0])) openThread(first || 'bot:' + S.data.bots[0].id);
   else renderMain();
   connect();
+  setI18nNames(() => [userName() === 'You' ? '' : userName(), ...S.data.bots.map((b) => b.name), ...S.data.rooms.map((r) => r.name), ...(S.data.threads || []).map((t) => t.title), ...(S.data.projects || []).map((p) => p.name), ...(S.data.sideGroups || []).map((g) => g.name)].filter(Boolean));
+  startI18n();
   if (!EMBED) panesRestore();
 })();
 

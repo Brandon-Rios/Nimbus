@@ -16,6 +16,7 @@ import { claudeEnv, claudeStatus, setClaudeToken, TOKEN_RE } from './claudeauth.
 import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport, cancelQueued, editQueued, threadLimit } from './runner.js';
 import * as TH from './threads.js';
 import { botCommands } from './slash.js';
+import { loadTools, approveTool, runTool, SCAN_PROMPT } from './apitools.js';
 import { ensureBrowser, watchBrowser, browserInput, closeBrowser } from './browser.js';
 import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
 import { startScheduler, nextRun, isValidCron } from './scheduler.js';
@@ -135,6 +136,9 @@ function postToThread(thread, text, files = [], voice = null) {
   if (files.length) text = `${text || 'See the attached files.'}\n\nAttached files (open them with the Read tool):\n` + files.map((f) => `- ${uploadPath(f)} (${f.type || 'file'}, ${f.size} bytes)`).join('\n');
   if (thread.startsWith('bot:') || thread.startsWith('t:')) {
     TH.autoTitle(thread, msg.body);
+    // API tools run since the bot last worked here: tell it what the user saw, so it can answer about it.
+    const notes = toolNotes.get(thread);
+    if (notes?.length) { toolNotes.delete(thread); text = `(Before this message, the user ran your API tools in Nimbus. What they saw:\n${notes.join('\n\n').slice(-6000)}\n)\n\n` + text; }
     runBot({ botId: TH.threadBot(thread), thread, prompt: text, msgId: msg.id, msgText: msg.body, voice });
   } else if (thread.startsWith('room:')) {
     const roomId = Number(thread.slice(5));
@@ -476,6 +480,27 @@ route('POST', '/api/bots', async (req, res) => {
   const defaults = JSON.stringify(['Bash(git push*)', 'Bash(rm -rf*)', 'Bash(*gh pr merge*)', 'mcp__*send*', 'mcp__*delete*', 'mcp__*pay*', 'mcp__*create_event*']);
   const r = q('INSERT INTO bots (name, approval_rules) VALUES (?,?)').run(b.name.trim(), defaults);
   json(res, 200, saveBot(r.lastInsertRowid, cleanBot(b)));
+});
+// ---------- API tools (apitools.js): the bot's own quick commands, run directly without Claude ----------
+const toolNotes = new Map(); // thread -> recent tool outputs, handed to the bot with your next message
+route('GET', '/api/bots/:id/api-tools', (req, res, p) => json(res, 200, { tools: loadTools(p.id) }));
+route('POST', '/api/bots/:id/api-tools/:name/approve', (req, res, p) => approveTool(p.id, p.name) ? json(res, 200, { ok: true }) : json(res, 404, { error: 'No such tool' }));
+route('POST', '/api/bots/:id/api-tools-scan', async (req, res, p) => {
+  const { thread } = await body(req);
+  try { json(res, 200, postToThread(String(thread || 'bot:' + Number(p.id)), '/api-tools scan\n\n' + SCAN_PROMPT)); } catch (e) { json(res, e.status || 500, { error: e.message }); }
+});
+route('POST', '/api/bots/:id/api-tools/:name/run', async (req, res, p) => {
+  const { args = '', thread: th } = await body(req);
+  const thread = String(th || 'bot:' + Number(p.id));
+  if (TH.threadBot(thread) !== Number(p.id)) return json(res, 400, { error: 'Wrong chat for this bot' });
+  try {
+    const r = await runTool(p.id, p.name, args, redact);
+    const cmd = `/${p.name}${String(args).trim() ? ' ' + String(args).trim() : ''}`;
+    addMessage(thread, 'user', 'text', cmd);
+    addMessage(thread, String(Number(p.id)), 'text', `${r.ok ? '' : '⚠ '}**${cmd}** · ran directly, no Claude usage${r.ok ? '' : ` (exit ${r.code})`}\n\n\`\`\`\n${r.out.replace(/```/g, "'''") || '(no output)'}\n\`\`\``);
+    const list = toolNotes.get(thread) || []; list.push(`${cmd}:\n${r.out.slice(0, 3000)}`); toolNotes.set(thread, list.slice(-5));
+    json(res, 200, { ok: r.ok });
+  } catch (e) { json(res, e.status || 500, { error: e.message }); }
 });
 route('GET', '/api/bots/:id/commands', async (req, res, p) => json(res, 200, { commands: await botCommands(p.id) }));
 route('PATCH', '/api/bots/:id', async (req, res, p) => json(res, 200, saveBot(Number(p.id), cleanBot(await body(req)))));
@@ -994,18 +1019,22 @@ startKokoro();
 process.on('exit', () => kokoroProc?.kill());
 const KOKORO_VOICES = { af_heart: 'Heart', af_bella: 'Bella', af_nicole: 'Nicole', af_sarah: 'Sarah', af_sky: 'Sky', af_nova: 'Nova', af_jessica: 'Jessica', af_river: 'River', af_aoede: 'Aoede', af_kore: 'Kore', af_alloy: 'Alloy',
   am_michael: 'Michael', am_adam: 'Adam', am_eric: 'Eric', am_liam: 'Liam', am_onyx: 'Onyx', am_echo: 'Echo', am_fenrir: 'Fenrir', am_puck: 'Puck',
-  bf_emma: 'Emma', bf_isabella: 'Isabella', bf_alice: 'Alice', bf_lily: 'Lily', bm_george: 'George', bm_daniel: 'Daniel', bm_lewis: 'Lewis', bm_fable: 'Fable' };
-const kokoroVoices = () => kokoroProc ? Object.entries(KOKORO_VOICES).map(([v, n]) => ({ id: 'kokoro:' + v, name: `${n} (${v[0] === 'a' ? 'American' : 'British'} ${v[1] === 'f' ? 'woman' : 'man'})`, group: 'Natural (Kokoro)' })) : [];
+  bf_emma: 'Emma', bf_isabella: 'Isabella', bf_alice: 'Alice', bf_lily: 'Lily', bm_george: 'George', bm_daniel: 'Daniel', bm_lewis: 'Lewis', bm_fable: 'Fable',
+  ef_dora: 'Dora', em_alex: 'Alex', ff_siwis: 'Siwis', hf_alpha: 'Alpha', hf_beta: 'Beta', hm_omega: 'Omega', hm_psi: 'Psi', if_sara: 'Sara', im_nicola: 'Nicola',
+  jf_alpha: 'Alpha', jf_gongitsune: 'Gongitsune', jf_nezumi: 'Nezumi', jf_tebukuro: 'Tebukuro', jm_kumo: 'Kumo', pf_dora: 'Dora', pm_alex: 'Alex',
+  zf_xiaobei: 'Xiaobei', zf_xiaoni: 'Xiaoni', zf_xiaoxiao: 'Xiaoxiao', zf_xiaoyi: 'Xiaoyi', zm_yunjian: 'Yunjian', zm_yunxi: 'Yunxi', zm_yunxia: 'Yunxia', zm_yunyang: 'Yunyang' };
+const KOKORO_LANG = { a: 'American', b: 'British', e: 'Spanish', f: 'French', h: 'Hindi', i: 'Italian', j: 'Japanese', p: 'Portuguese', z: 'Chinese' };
+const kokoroVoices = () => kokoroProc ? Object.entries(KOKORO_VOICES).map(([v, n]) => ({ id: 'kokoro:' + v, name: `${n} (${KOKORO_LANG[v[0]]} ${v[1] === 'f' ? 'woman' : 'man'})`, group: 'ab'.includes(v[0]) ? 'Natural (Kokoro)' : 'Natural, other languages (Kokoro)' })) : [];
 
 // Voices: every Piper model in the voices folder; each bot can pick one (setting bot_voices = { botId: voiceId }).
 const VOICE_DIR = path.dirname(PIPER_VOICE);
-const ACCENT = { en_US: 'American', en_GB: 'British' };
+const ACCENT = { en_US: 'American', en_GB: 'British', de_DE: 'German', ru_RU: 'Russian', nl_NL: 'Dutch', pl_PL: 'Polish', uk_UA: 'Ukrainian', sv_SE: 'Swedish', tr_TR: 'Turkish', vi_VN: 'Vietnamese' };
 function listVoices() {
   try {
     return fs.readdirSync(VOICE_DIR).filter((f) => f.endsWith('.onnx')).map((f) => {
       const id = f.slice(0, -5), [lang, who = '', quality = ''] = id.split('-');
       const name = who.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).replace(/^Hfc /, 'HFC ');
-      return { id, name: `${name} (${ACCENT[lang] || lang}${quality === 'high' ? ', high quality' : ''})`, lang, group: 'Basic (Piper)' };
+      return { id, name: `${name} (${ACCENT[lang] || lang}${quality === 'high' ? ', high quality' : ''})`, lang, group: lang.startsWith('en') ? 'Basic (Piper)' : 'Basic, other languages (Piper)' };
     }).sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
   } catch { return []; }
 }
@@ -1106,10 +1135,14 @@ route('GET', '/api/activity', (req, res, _p, url) => {
 const WHISPER_BIN = process.env.NIMBUS_WHISPER_BIN || path.join(os.homedir(), 'opt/whisper.cpp/build/bin/whisper-server');
 const WHISPER_MODEL = process.env.NIMBUS_WHISPER_MODEL || path.join(os.homedir(), 'opt/whisper-models/ggml-small.en.bin');
 const WHISPER_PORT = Number(process.env.NIMBUS_WHISPER_PORT || 8178);
+// Speech language (setting speech_lang): '' = English (faster English-only model); 'auto' or a language code uses the multilingual model.
+const WHISPER_MULTI = process.env.NIMBUS_WHISPER_MULTI || path.join(path.dirname(WHISPER_MODEL), 'ggml-small.bin');
+const speechLang = () => getSetting('speech_lang') || '';
+const whisperModel = () => speechLang() && fs.existsSync(WHISPER_MULTI) ? WHISPER_MULTI : WHISPER_MODEL;
 let whisperProc = null, whisperFails = 0;
 function startWhisper() {
   if (!fs.existsSync(WHISPER_BIN) || !fs.existsSync(WHISPER_MODEL)) return;
-  whisperProc = spawn(WHISPER_BIN, ['-m', WHISPER_MODEL, '--host', '127.0.0.1', '--port', String(WHISPER_PORT), '-t', String(Math.max(2, os.cpus().length - 2))], { stdio: 'ignore' });
+  whisperProc = spawn(WHISPER_BIN, ['-m', whisperModel(), '--host', '127.0.0.1', '--port', String(WHISPER_PORT), '-t', String(Math.max(2, os.cpus().length - 2))], { stdio: 'ignore' });
   whisperProc.on('exit', () => {
     whisperProc = null;
     if (++whisperFails <= 5) setTimeout(startWhisper, 5000 * whisperFails); // crashed: retry with backoff
@@ -1119,6 +1152,21 @@ function startWhisper() {
 startWhisper();
 process.on('exit', () => whisperProc?.kill());
 route('GET', '/api/transcribe', (req, res) => json(res, 200, { available: !!whisperProc }));
+// Language settings: what dictation listens for, and what language bots reply in (both shared by all devices).
+route('GET', '/api/language', (req, res) => json(res, 200, { speech: speechLang(), reply: getSetting('reply_lang') || '', multilingual: fs.existsSync(WHISPER_MULTI) }));
+route('PUT', '/api/language', async (req, res) => {
+  const { speech, reply } = await body(req);
+  if (speech !== undefined) {
+    const next = /^(auto|[a-z]{2})$/.test(speech) && speech !== 'en' ? speech : '';
+    if (next !== speechLang()) {
+      const modelChanged = (!!next) !== (!!speechLang());
+      setSetting('speech_lang', next);
+      if (modelChanged && whisperProc) { whisperFails = -1; whisperProc.kill(); } // exits, then restarts with the other model
+    }
+  }
+  if (reply !== undefined) { setSetting('reply_lang', String(reply || '').replace(/[^\p{L} ()-]/gu, '').slice(0, 40)); for (const b of q('SELECT * FROM bots').all()) writeBotBrief(parseBot(b)); }
+  json(res, 200, { ok: true });
+});
 route('POST', '/api/transcribe', async (req, res) => {
   if (!whisperProc) return json(res, 503, { error: 'Dictation isn’t running on the server' });
   const { audio } = await body(req, 16e6); // ~5 minutes of 16 kHz mono WAV, base64
@@ -1128,6 +1176,7 @@ route('POST', '/api/transcribe', async (req, res) => {
   form.append('file', new Blob([wav], { type: 'audio/wav' }), 'speech.wav');
   form.append('response_format', 'json');
   form.append('temperature', '0');
+  if (speechLang()) form.append('language', speechLang());
   try {
     const r = await fetch(`http://127.0.0.1:${WHISPER_PORT}/inference`, { method: 'POST', body: form, signal: AbortSignal.timeout(120_000) });
     const d = await r.json();
@@ -1136,6 +1185,67 @@ route('POST', '/api/transcribe', async (req, res) => {
     const text = String(d.text || '').replace(/\[[^\]]*\]|\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
     json(res, 200, { text });
   } catch (e) { json(res, 502, { error: 'Transcription failed: ' + e.message }); }
+});
+
+// ---------- interface translation (bin/translate-server.py, Argos Translate, offline) ----------
+// Started on first use. Translations are cached per language in data/i18n/<lang>.json and shared by every device.
+const ARGOS_PY = process.env.NIMBUS_ARGOS_PY || path.join(os.homedir(), 'opt/argos-py/bin/python');
+const TRANSLATE_PORT = Number(process.env.NIMBUS_TRANSLATE_PORT || 8180);
+const I18N_LANGS = ['es', 'fr', 'de', 'pt', 'it', 'nl', 'pl', 'sv', 'tr', 'ru', 'uk', 'ja', 'zh', 'ko', 'hi', 'vi', 'id'];
+let translateProc = null, translateReady = null;
+function startTranslate() {
+  if (translateReady) return translateReady;
+  if (!fs.existsSync(ARGOS_PY)) return Promise.reject(new Error('Translation isn’t installed on the server'));
+  translateProc = spawn(ARGOS_PY, ['-I', path.join(HERE, 'bin/translate-server.py'), String(TRANSLATE_PORT)], { stdio: 'ignore' });
+  translateProc.on('exit', () => { translateProc = null; translateReady = null; });
+  translateReady = (async () => {
+    for (let i = 0; i < 120; i++) { // loading the models takes a few seconds
+      try { if ((await fetch(`http://127.0.0.1:${TRANSLATE_PORT}/`)).ok) return; } catch {}
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    throw new Error('Translation didn’t start');
+  })();
+  translateReady.catch(() => { translateReady = null; });
+  return translateReady;
+}
+process.on('exit', () => translateProc?.kill());
+const i18nCache = new Map(), i18nFile = (l) => path.join(DATA_DIR, 'i18n', l + '.json');
+function i18nLoad(l) {
+  if (!i18nCache.has(l)) { let d = {}; try { d = JSON.parse(fs.readFileSync(i18nFile(l), 'utf8')); } catch {} i18nCache.set(l, d); }
+  return i18nCache.get(l);
+}
+let i18nSaveTimer = {};
+function i18nSave(l) {
+  clearTimeout(i18nSaveTimer[l]);
+  i18nSaveTimer[l] = setTimeout(() => { fs.mkdirSync(path.dirname(i18nFile(l)), { recursive: true }); fs.writeFileSync(i18nFile(l), JSON.stringify(i18nLoad(l))); }, 1000);
+}
+// Brand and product names stay as they are.
+const KEEP = ['Nimbus', 'Claude', 'Claude Code', 'Plugins', 'plugins', 'Connectors', '{#}', 'Bot', 'bot', 'Bots', 'bots', 'Haiku', 'Sonnet', 'Opus', 'Kokoro', 'Piper', 'GitHub', 'Google', 'Proxmox', 'Ctrl', 'Alt', 'Shift', 'Enter'];
+route('GET', '/api/i18n/:lang', (req, res, p) => I18N_LANGS.includes(p.lang) ? json(res, 200, { translations: i18nLoad(p.lang) }) : json(res, 404, { error: 'Unknown language' }));
+route('POST', '/api/i18n/:lang', async (req, res, p) => {
+  if (!I18N_LANGS.includes(p.lang)) return json(res, 404, { error: 'Unknown language' });
+  const { texts = [], keep: names = [] } = await body(req);
+  const dict = i18nLoad(p.lang);
+  // Names (bots, chats, projects) the page asked to keep, plus brand names; longest first so "Claude Code" beats "Claude".
+  const keepRe = new RegExp(`(?<![\\p{L}])(${[...KEEP, ...(Array.isArray(names) ? names : []).map(String).filter((n) => n.length > 1 && n.length < 60).slice(0, 50)].sort((a, b) => b.length - a.length).map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\p{L}])`, 'gu');
+  const todo = [...new Set((Array.isArray(texts) ? texts : []).map((t) => String(t).trim()).filter((t) => t && t.length < 400 && !(t in dict)))].slice(0, 150);
+  if (todo.length && Object.keys(dict).length < 30000) {
+    try {
+      await startTranslate();
+      // Protect brand names and shortcut keys with placeholders the translator leaves alone.
+      const masked = todo.map((t) => { const keep = []; const m = t.replace(keepRe, (w) => `#${keep.push(w) - 1}#`); return { m, keep }; });
+      const r = await fetch(`http://127.0.0.1:${TRANSLATE_PORT}/`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lang: p.lang, texts: masked.map((x) => x.m) }), signal: AbortSignal.timeout(120_000) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      todo.forEach((t, i) => {
+        let out = String(d.texts[i] ?? t).replace(/#\s*(\d+)\s*#/g, (_, n) => masked[i].keep[n] ?? '').trim();
+        if (!/[.!?。…]$/.test(t)) out = out.replace(/[.。]$/, ''); // the translator likes to add a full stop
+        dict[t] = out;
+      });
+      i18nSave(p.lang);
+    } catch (e) { return json(res, 503, { error: e.message }); }
+  }
+  json(res, 200, { translations: Object.fromEntries((Array.isArray(texts) ? texts : []).map((t) => [String(t).trim(), dict[String(t).trim()]]).filter(([, v]) => v !== undefined)) });
 });
 
 // Approvals (hook side: localhost, or the computer VM)

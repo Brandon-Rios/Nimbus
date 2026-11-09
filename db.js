@@ -177,7 +177,7 @@ ${bot.instructions || '(none yet)'}
   approval automatically. If one is rejected, read the reason and adjust.
 - When the user tells you a preference or rule, add one line to MEMORY.md in this folder.
 - This folder is your workspace. Keep notes and files here.
-
+${getSetting('reply_lang') ? `- Always reply to the user in ${getSetting('reply_lang')}, even if they write in another language (code, commands and file names stay as they are).\n` : ''}
 ${remote ? '' : filesSection()}${remote ? '' : threadsSection()}
 ## Your team
 ${teamSection(bot, remote)}

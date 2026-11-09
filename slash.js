@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { botDir } from './db.js';
 import { pluginCatalog } from './ccplugins.js';
+import { loadTools } from './apitools.js';
 
 const HOME_CLAUDE = path.join(os.homedir(), '.claude');
 const ls = (d) => { try { return fs.readdirSync(d, { withFileTypes: true }); } catch { return []; } };
@@ -50,6 +51,7 @@ async function shared() {
 export async function botCommands(botId) {
   const out = [];
   scan(path.join(botDir(Number(botId)), '.claude'), '', 'this bot', out);
+  for (const t of loadTools(botId)) out.push({ cmd: '/' + t.name, args: t.args, desc: t.desc, source: 'API tool', api: true, changes: t.changes });
   const seen = new Set();
   return [...out, ...(await shared())].filter((c) => !seen.has(c.cmd) && seen.add(c.cmd)).sort((a, b) => a.cmd.localeCompare(b.cmd));
 }

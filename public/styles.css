@@ -950,3 +950,13 @@ html.embed .head { padding-left: 10px; }
 .ctx-menu button span:first-of-type { flex: 1; }
 .ctx-menu button.danger { color: var(--bad); }
 .ctx-menu .ctx-gap { display: inline-block; width: 18px; }
+/* API tools */
+.api-tools { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; max-height: 55vh; overflow: auto; }
+.api-tool { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.at-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.at-desc { flex: 1; min-width: 160px; }
+.at-badge { font-size: 11px; padding: 2px 7px; border-radius: 99px; background: var(--btn); color: var(--muted); }
+.at-badge.warn { color: var(--warn); }
+.api-tool details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+.api-tool pre, .at-script { font-family: var(--mono); font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow: auto; }
+.at-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }

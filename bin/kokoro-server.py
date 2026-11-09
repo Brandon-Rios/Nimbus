@@ -10,7 +10,9 @@ opts = ort.SessionOptions()
 opts.intra_op_num_threads = max(2, min(8, (os.cpu_count() or 4) - 2))
 opts.log_severity_level = 3
 k = Kokoro.from_session(ort.InferenceSession(model, opts, providers=['CPUExecutionProvider']), voices)
-ENGLISH = sorted(v for v in k.get_voices() if v[:2] in ('af', 'am', 'bf', 'bm'))
+# Voice prefix -> language: a American, b British, e Spanish, f French, h Hindi, i Italian, j Japanese, p Portuguese, z Chinese.
+LANG = {'a': 'en-us', 'b': 'en-gb', 'e': 'es', 'f': 'fr-fr', 'h': 'hi', 'i': 'it', 'j': 'ja', 'p': 'pt-br', 'z': 'cmn'}
+ENGLISH = sorted(v for v in k.get_voices() if v[0] in LANG)
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -22,7 +24,7 @@ class H(BaseHTTPRequestHandler):
         try:
             req = json.loads(self.rfile.read(int(self.headers.get('content-length') or 0)) or b'{}')
             voice = req.get('voice') if req.get('voice') in ENGLISH else 'af_heart'
-            audio, rate = k.create(str(req.get('text') or '')[:6000], voice=voice, speed=float(req.get('speed') or 1.0), lang='en-gb' if voice[0] == 'b' else 'en-us')
+            audio, rate = k.create(str(req.get('text') or '')[:6000], voice=voice, speed=float(req.get('speed') or 1.0), lang=LANG[voice[0]])
             buf = io.BytesIO(); sf.write(buf, audio, rate, format='WAV', subtype='PCM_16')
             self.send(200, buf.getvalue(), 'audio/wav')
         except Exception as e:
