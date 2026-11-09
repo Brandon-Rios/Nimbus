@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { db, q, botDir, DATA_DIR } from './db.js';
+import { codeContext, removeThreadBranch, ensureCodeColumns } from './code.js';
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS threads (
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 CREATE TABLE IF NOT EXISTS project_members (project_id INTEGER, bot_id INTEGER, PRIMARY KEY (project_id, bot_id));
 `);
+ensureCodeColumns();
 if (!q('PRAGMA table_info(rooms)').all().some((c) => c.name === 'project_id')) db.exec('ALTER TABLE rooms ADD COLUMN project_id INTEGER');
 
 export const BUILT_IN = { inbox: 'Inbox', routines: 'Routines' };
@@ -61,6 +63,7 @@ export function deleteThread(id) {
   q('DELETE FROM messages WHERE thread=?').run('t:' + t.id);
   q('DELETE FROM sessions WHERE thread=?').run('t:' + t.id);
   q('DELETE FROM threads WHERE id=?').run(t.id);
+  removeThreadBranch(t).catch(() => {}); // the branch folder goes; the branch itself stays in git
 }
 // Name a new thread from its first message, locally (no extra Claude call).
 export function autoTitle(key, text) {
@@ -86,10 +89,12 @@ export function canUseProject(projectId, botId) {
   if (!p) return false;
   return p.owner_bot_id != null ? p.owner_bot_id === Number(botId) : projectMembers(p.id).includes(Number(botId));
 }
-export function createProject({ name, instructions = '', ownerBotId = null, members = [] }) {
+export function createProject({ name, instructions = '', ownerBotId = null, members = [], repo = null, testCmd = '', previewCmd = '' }) {
   name = String(name || '').trim().slice(0, 60);
   if (!name) throw new Error('Give the project a name');
-  const r = q('INSERT INTO projects (name, instructions, owner_bot_id) VALUES (?,?,?)').run(name, String(instructions).slice(0, 8000), ownerBotId == null ? null : Number(ownerBotId));
+  if (repo) ownerBotId = null; // Nimbus Code projects are always shared
+  const r = q('INSERT INTO projects (name, instructions, owner_bot_id, kind, repo, test_cmd, preview_cmd) VALUES (?,?,?,?,?,?,?)').run(name, String(instructions).slice(0, 8000), ownerBotId == null ? null : Number(ownerBotId),
+    repo ? 'code' : 'chat', repo || null, String(testCmd || '').slice(0, 300), String(previewCmd || '').slice(0, 300));
   const id = Number(r.lastInsertRowid);
   if (ownerBotId == null) setMembers(id, members);
   projectFolder(id);
@@ -103,7 +108,7 @@ function setMembers(id, members) {
   // Threads of bots that left the project fall back to no project.
   q(`UPDATE threads SET project_id=NULL WHERE project_id=? AND bot_id NOT IN (${ids.join(',')})`).run(id);
 }
-export function updateProject(id, { name, instructions, members, archived }) {
+export function updateProject(id, { name, instructions, members, archived, testCmd, previewCmd }) {
   const p = q('SELECT * FROM projects WHERE id=?').get(Number(id));
   if (!p) throw new Error('No such project');
   q('UPDATE projects SET name=?, instructions=?, archived=? WHERE id=?').run(
@@ -111,9 +116,16 @@ export function updateProject(id, { name, instructions, members, archived }) {
     instructions === undefined ? p.instructions : String(instructions).slice(0, 8000),
     archived === undefined ? p.archived : archived ? 1 : 0, p.id);
   if (p.owner_bot_id == null && Array.isArray(members)) setMembers(p.id, members);
+  if (testCmd !== undefined) q('UPDATE projects SET test_cmd=? WHERE id=?').run(String(testCmd).slice(0, 300), p.id);
+  if (previewCmd !== undefined) q('UPDATE projects SET preview_cmd=? WHERE id=?').run(String(previewCmd).slice(0, 300), p.id);
 }
 // Deleting a project keeps its threads (they move out of the project) and its files.
 export function deleteProject(id) {
+  const p = q('SELECT kind FROM projects WHERE id=?').get(Number(id));
+  if (p?.kind === 'code') { // code threads only make sense inside their repo: archive them and drop their branch folders (branches stay)
+    for (const t of q('SELECT * FROM threads WHERE project_id=?').all(Number(id))) removeThreadBranch(t).catch(() => {});
+    q("UPDATE threads SET archived=1 WHERE project_id=?").run(Number(id));
+  }
   q('UPDATE threads SET project_id=NULL WHERE project_id=?').run(Number(id));
   q('UPDATE rooms SET project_id=NULL WHERE project_id=?').run(Number(id));
   q('DELETE FROM project_members WHERE project_id=?').run(Number(id));
@@ -147,6 +159,7 @@ export function threadContext(key, botId) {
   const p = q('SELECT * FROM projects WHERE id=?').get(t.project_id);
   if (!p) return '';
   const others = p.owner_bot_id == null ? projectMembers(p.id).filter((b) => b !== Number(botId)).map((b) => q('SELECT name FROM bots WHERE id=?').get(b)?.name).filter(Boolean) : [];
+  if (p.kind === 'code') return codeContext(key) + (others.length ? `(Other bots in this project: ${others.join(', ')}. @mention one by name to hand it work.)\n` : '') + (p.instructions.trim() ? `Project instructions:\n${p.instructions.trim()}\n` : '') + '\n';
   return `(Project "${p.name}"${p.owner_bot_id == null ? ', shared' : ''}${t.title ? `, thread "${t.title}"` : ''}. Project files: ${projectFolder(p.id)}`
     + (others.length ? `. Other bots in it: ${others.join(', ')}` : '') + ')\n'
     + (p.instructions.trim() ? `Project instructions:\n${p.instructions.trim()}\n` : '') + '\n';

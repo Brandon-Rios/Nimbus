@@ -13,6 +13,7 @@ import { sandboxed, wrap, botEnv } from './sandbox.js';
 import { claudeEnv } from './claudeauth.js';
 import { getPlanUsage } from './planusage.js';
 import { threadContext } from './threads.js';
+import * as Code from './code.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HOOK = path.join(HERE, 'hooks', 'approval-hook.js');
@@ -171,6 +172,20 @@ export function markTraceWaiting(runId, toolName, waiting) {
 }
 
 // ---------- rooms ----------
+// Nimbus Code: edits keep a short before/after so the chat can show them as a diff; commands keep their output.
+function codeStep(tool, input = {}, cwd) {
+  const rel = (f) => (f && f.startsWith(cwd + '/') ? f.slice(cwd.length + 1) : f);
+  const cut = (s) => redact(String(s ?? '')).slice(0, 1500);
+  if (tool === 'Edit') return { file: rel(input.file_path), diff: [{ old: cut(input.old_string), new: cut(input.new_string) }] };
+  if (tool === 'MultiEdit') return { file: rel(input.file_path), diff: (input.edits || []).slice(0, 6).map((e) => ({ old: cut(e.old_string), new: cut(e.new_string) })) };
+  if (tool === 'Write') return { file: rel(input.file_path), diff: [{ old: '', new: cut(input.content) }] };
+  if (tool === 'Bash') return { cmd: cut(input.command).slice(0, 500) };
+  return {};
+}
+const toolText = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => x.text || '').join('\n') : '');
+export function projectBots(projectId) {
+  return q('SELECT b.* FROM bots b JOIN project_members m ON m.bot_id=b.id WHERE m.project_id=?').all(Number(projectId)).map(parseBot);
+}
 export function roomMembers(roomId) {
   return q('SELECT b.* FROM bots b JOIN room_members m ON m.bot_id=b.id WHERE m.room_id=? ORDER BY b.id').all(roomId).map(parseBot);
 }
@@ -333,7 +348,7 @@ export function editQueued(msgId, text) {
 }
 
 function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     const bot = parseBot(q('SELECT * FROM bots WHERE id=?').get(botId));
     const runRow = q('SELECT status FROM runs WHERE id=?').get(runId);
     if (!bot || runRow?.status !== 'queued') return resolve(); // stopped, cancelled or merged into an earlier task
@@ -348,7 +363,10 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
       q('UPDATE runs SET prompt=? WHERE id=?').run(redact(prompt), runId);
       for (const p of parts) setQueued(p.msgId, 0);
     }
-    const cwd = writeBotBrief(bot, computersOn() && !!bot.computer);
+    // Nimbus Code threads run locally, inside the repo (or the thread's branch folder); the bot's own folder stays reachable.
+    const ct = Code.threadCode(thread);
+    const ownDir = writeBotBrief(bot, !ct && computersOn() && !!bot.computer);
+    const cwd = ct ? ct.cwd : ownDir;
     const isRoom = thread.startsWith('room:');
     const roomId = isRoom ? Number(thread.slice(5)) : null;
 
@@ -378,7 +396,7 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
 
     // Voice mode: the reply is spoken aloud, so keep it short and plain; 'fast' runs it on Haiku.
     if (voice) fullPrompt += '\n\n(Voice conversation: the user is speaking out loud and will hear your reply read aloud. Reply in one to three short, natural spoken sentences. No markdown, lists, tables, code or links unless they ask. You can still use tools when needed.)';
-    const remote = computersOn() && !!bot.computer;
+    const remote = !ct && computersOn() && !!bot.computer;
     const hookPath = remote ? '/opt/nimbus/approval-hook.js' : HOOK;
     const settings = {
       hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: `node "${hookPath}"`, timeout: 86400 }] }] }
@@ -391,6 +409,7 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
     if (Object.keys(mcp).length) args.push('--mcp-config', JSON.stringify({ mcpServers: mcp }));
     if (voice === 'fast') args.push('--model', 'haiku'); else if (bot.model) args.push('--model', bot.model);
     if (session) args.push('--resume', session);
+    if (ct) { args.push('--add-dir', ownDir); try { await Code.checkpointBefore(runId, thread); } catch {} }
 
     q("UPDATE runs SET status='running', started_at=unixepoch(), effort=? WHERE id=?").run(bot.effort, runId);
     if (q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='running'").get(botId).n > 1) refreshStatus(botId);
@@ -410,12 +429,12 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
     const hookEnv = { NIMBUS_RUN_ID: String(runId), NIMBUS_HOOK_TOKEN: HOOK_TOKEN };
     // Local bots get only the environment they need (never the server's .env); sandboxed ones start inside bwrap (sandbox.js).
     const inBox = !remote && sandboxed(botId);
-    const [cmd, cmdArgs] = inBox ? wrap(CLAUDE_BIN, args, cwd, { sharedLogin: !claudeEnv().CLAUDE_CODE_OAUTH_TOKEN }) : [CLAUDE_BIN, args];
+    const [cmd, cmdArgs] = inBox ? wrap(CLAUDE_BIN, args, ownDir, { sharedLogin: !claudeEnv().CLAUDE_CODE_OAUTH_TOKEN, ...(ct ? { work: [...new Set([ct.repo, ct.cwd])], chdir: cwd } : {}) }) : [CLAUDE_BIN, args];
     const child = remote
       ? remoteRun(bot, cwd, runId, args, fullPrompt, { ...PRIVACY_ENV, ...claudeEnv(), ...hookEnv, NIMBUS_URL: agentConfig().callback })
       : spawn(cmd, cmdArgs, {
         cwd,
-        env: botEnv({ ...officeEnv(), ...PRIVACY_ENV, ...claudeEnv(), ...hookEnv, NIMBUS_URL: `http://127.0.0.1:${process.env.PORT || 8787}` }, cwd, inBox),
+        env: botEnv({ ...officeEnv(), ...PRIVACY_ENV, ...claudeEnv(), ...hookEnv, NIMBUS_URL: `http://127.0.0.1:${process.env.PORT || 8787}`, ...(ct ? { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1' } : {}) }, ownDir, inBox),
         stdio: ['pipe', 'pipe', 'pipe']
       });
     procs.set(runId, child);
@@ -460,6 +479,7 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
           for (const block of ev.message.content) {
             if (block.type === 'tool_use') {
               const step = { id: block.id, tool: block.name, text: summarizeTool(block.name, block.input), state: 'running' };
+              if (ct) Object.assign(step, codeStep(block.name, block.input, cwd));
               toolsById.set(block.id, step);
               traceBody.steps.push(step);
               updateMessage(traceMsg.id, traceBody);
@@ -480,6 +500,8 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
               const step = toolsById.get(block.tool_use_id);
               const denied = block.is_error && /Nimbus: rejected/.test(JSON.stringify(block.content));
               step.state = denied ? 'rejected' : block.is_error ? 'error' : 'done';
+              if (ct && step.cmd) step.out = redact(toolText(block.content)).slice(-1500);
+              if (ct) Code.changedSoon(thread, step.file);
               updateMessage(traceMsg.id, traceBody);
             }
           }
@@ -545,6 +567,14 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
         runBot({ botId, thread, prompt: '/compact', source: 'auto-compact' });
       }
 
+      // Nimbus Code: a card with what this turn changed (View diff, Undo, Commit), then hand-offs to other bots in the project.
+      if (ct) {
+        Code.checkpointAfter(runId).then((ch) => { if (ch) addMessage(thread, botId, 'changes', ch, runId); Code.changedNow(thread); }).catch(() => {});
+        if (msg.kind === 'text' && depth < MAX_HANDOFF_DEPTH) {
+          const members = projectBots(ct.p.id);
+          for (const target of findMentions(reply, members, botId)) runBot({ botId: target.id, thread, prompt: `${bot.name} said: ${reply}`, depth: depth + 1, source: bot.name });
+        }
+      }
       // Group chat handoffs: bots @mentioning other bots wakes them up.
       if (isRoom && msg.kind === 'text' && depth < MAX_HANDOFF_DEPTH) {
         const room = q('SELECT * FROM rooms WHERE id=?').get(roomId);

@@ -40,7 +40,8 @@ export function sandboxed(botId) {
 const projectDir = (cwd) => path.join(HOME, '.claude', 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'));
 
 // Returns [command, args] that run cmd/args inside the box. botDir is the bot's own folder (also the cwd).
-export function wrap(cmd, args, botDir, { sharedLogin = false } = {}) {
+// work: extra folders the bot may change (a Nimbus Code repo); the run starts in chdir.
+export function wrap(cmd, args, botDir, { sharedLogin = false, work = [], chdir = null } = {}) {
   const own = path.resolve(botDir);
   const state = path.join(own, '.nimbus-sandbox');
   fs.mkdirSync(path.join(state, 'npm'), { recursive: true });
@@ -60,8 +61,9 @@ export function wrap(cmd, args, botDir, { sharedLogin = false } = {}) {
   // Runs without a pasted Claude token use the server's login, so they need to read it.
   if (sharedLogin) ro(path.join(HOME, '.claude', '.credentials.json'));
   rw(own); rw(proj);
+  for (const w of work) { rw(path.resolve(w)); const wp = projectDir(path.resolve(w)); fs.mkdirSync(wp, { recursive: true }); rw(wp); }
   b.push('--bind', claudeJson, path.join(HOME, '.claude.json'));
-  b.push('--chdir', own, '--', cmd, ...args);
+  b.push('--chdir', chdir || own, '--', cmd, ...args);
   return [BWRAP, b];
 }
 

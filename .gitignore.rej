@@ -1,0 +1,6 @@
+diff a/.gitignore b/.gitignore	(rejected hunks)
+@@ -8,3 +8,4 @@ desktop/obj/
+ desktop/out/
+ public/NimbusSetup.exe
+ public/NimbusSetup.json
++__pycache__/

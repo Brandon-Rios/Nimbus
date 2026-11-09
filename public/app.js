@@ -3,6 +3,7 @@ import { attachAutocorrect } from './autocorrect.js';
 import { THEMES, resolveTheme, applyThemeVars } from './themes.js';
 import { startVoice, voiceMessage } from './voice.js';
 import { LANGS, LANG_NAMES, uiLang, setUiLang, startI18n, setI18nNames } from './i18n.js';
+import { initCode, codeSidebar, codeProject, codeThreadOpened, toggleCodePane, onCodeChanged, renderChanges, codeStepHtml, codeProjectModal, CODE_ICON, CM, setCodeMode, codeModeSide, newCodeThread, codeDraftMain, codeDraftSend, deleteCodeProject } from './codeui.js';
 import { startRecording, stopRecording, cancelRecording, isRecording, browserDictation } from './dictation.js';
 const $ = (s, el = document) => el.querySelector(s);
 // Split panes: an extra pane is this same app in a frame (?pane=<id>), showing one chat without the sidebar.
@@ -140,6 +141,7 @@ const TI = {
 };
 const sideOpen = JSON.parse(localStorage.sideOpen || '{}'); // bot id / 'p<id>' -> expanded?
 const saveSideOpen = () => { localStorage.sideOpen = JSON.stringify(sideOpen); };
+initCode({ S, api, esc, modal, closeModal, toast, bot, avatar, ICON, TI, BOT_COLORS, threadKey, threadOf, openThread, refreshState, renderSide: () => renderSide(), renderMain: () => renderMain(), stamp, popover, sideOpen });
 function crumbHtml() {
   const t = threadOf(threadKey()), p = t?.project_id ? projectOf(t.project_id) : null;
   return (p ? `<span class="muted">${esc(p.name)} ›</span> ` : '') + `<span>${esc(threadName(threadKey()))}</span>` + TI.chev;
@@ -152,7 +154,7 @@ function sideTree(b, key) {
   const pids = [...new Set([...S.data.projects.filter((p) => p.owner_bot_id === b.id && !p.archived).map((p) => p.id), ...ts.filter((t) => t.project_id).map((t) => t.project_id)])];
   let h = row('bot:' + b.id, 'General', TI.chat);
   for (const pid of pids) {
-    const p = projectOf(pid); if (!p) continue;
+    const p = projectOf(pid); if (!p || p.kind === 'code') continue; // code projects have their own section
     const open = sideOpen['p' + pid] !== false || ts.some((t) => t.project_id === pid && key === 't:' + t.id);
     h += `<div class="side-proj"><button class="side-sub-item proj ${open ? 'open' : ''}" data-proj-toggle="${pid}">${TI.chev}${ICON.folder}<span class="lbl">${esc(p.name)}</span>${p.owner_bot_id == null ? '<em>shared</em>' : ''}</button><button class="side-more" data-proj-menu="${pid}" data-bot="${b.id}" aria-label="Project options">${TI.dots}</button></div>`;
     if (open) h += chats(ts.filter((t) => t.project_id === pid), 'in-proj') || `<div class="side-sub-empty in-proj">No threads yet</div>`;
@@ -171,7 +173,7 @@ function sideTree(b, key) {
   return `<div class="side-sub">${h}</div>`;
 }
 function sharedProjects(key) {
-  const ps = S.data.projects.filter((p) => p.owner_bot_id == null && !p.archived);
+  const ps = S.data.projects.filter((p) => p.owner_bot_id == null && !p.archived && p.kind !== 'code');
   if (!ps.length) return '';
   return `<div class="side-section">Shared projects</div>` + ps.map((p) => {
     const ts = S.data.threads.filter((t) => t.project_id === p.id && !t.archived && t.kind === 'chat');
@@ -429,6 +431,7 @@ let sideQuery = '';
 function renderSide() {
   const d = S.data;
   const key = threadKey();
+  if (CM.on && !EMBED) { $('#side').innerHTML = codeModeSide(key); return; }
   const items = [
     ...d.bots.map((b) => ({ key: 'bot:' + b.id, bot: b, name: b.name, av: avatar(b, 38), state: b.status.state, last: botKeys(b.id).map((k) => d.last[k]).filter(Boolean).sort((x, y) => y.at - x.at)[0], fallback: b.role, created: b.created_at })),
     ...d.rooms.map((r) => ({ key: 'room:' + r.id, name: r.name, av: roomAvatar(r, 38), state: r.members.some((id) => bot(id)?.status.state === 'working') ? 'working' : 'idle', last: d.last['room:' + r.id], fallback: `${r.members.length} bots`, created: r.created_at }))
@@ -455,7 +458,7 @@ function renderSide() {
             <span class="sub">${esc(it.last ? (it.last.author === 'user' ? 'You: ' : '') + it.last.text : it.fallback || 'Say hi')}</span>
           </span>
           ${it.bot ? `<span class="side-caret ${sideIsOpen(it.bot.id) ? 'open' : ''}" data-expand="${it.bot.id}" role="button" aria-label="Show threads">${TI.chev}</span>` : ''}
-        </button>${it.bot && !sideQuery && sideIsOpen(it.bot.id) ? sideTree(it.bot, key) : ''}`).join('') + (g ? '</div>' : '')).join('') + (sideQuery ? '' : sharedProjects(key)) + (sideQuery ? '' : d.sideOrder ? '<button class="side-reset" data-act="side-recent">↺ Sort by recent activity</button>'
+        </button>${it.bot && !sideQuery && sideIsOpen(it.bot.id) ? sideTree(it.bot, key) : ''}`).join('') + (g ? '</div>' : '')).join('') + (sideQuery ? '' : codeSidebar(key) + sharedProjects(key)) + (sideQuery ? '' : d.sideOrder ? '<button class="side-reset" data-act="side-recent">↺ Sort by recent activity</button>'
           : items.length > 1 ? '<div class="side-hint">Tip: drag chats to arrange them</div>' : '')
         : sideQuery ? '<div class="side-empty">No chats match</div>'
         : `<div class="side-empty">No bots yet.<br><button class="link" data-act="market">Browse Connectors</button> or <button class="link" data-act="new-bot">make one</button>.</div>`}
@@ -859,6 +862,7 @@ function describeTool(tool, input = {}) {
 // ---------- main ----------
 function renderMain() {
   const main = $('#main');
+  if (CM.draft) { main.innerHTML = codeDraftMain(); attachAutocorrect($('#msg')); autosize($('#msg')); return; }
   if (!S.current) {
     const none = !S.data.bots.length;
     if (EMBED) { main.innerHTML = `<header class="head"><b class="pane-pick-title">Pick a chat for this pane</b><div class="actions">${paneBtns()}</div></header>
@@ -900,6 +904,7 @@ function renderMain() {
           <button class="icon-btn" data-act="plugins" title="Plugins" aria-label="Plugins">${ICON.plug}${b.plugins.length ? `<i class="count">${b.plugins.length}</i>` : ''}</button>
           <button class="icon-btn" data-act="memory" title="Memory" aria-label="Memory">${ICON.book}</button>
           <button class="icon-btn" data-act="new-thread" title="New thread" aria-label="New thread">${ICON.compose}</button>
+          ${codeProject(threadKey()) ? `<button class="icon-btn code-btn" data-act="code-pane" title="Code: branch, changes, tests, preview, terminal" aria-label="Code panel">${CODE_ICON}</button>` : ''}
           <button class="icon-btn" data-act="info" title="Chat details: environment, context, connectors" aria-label="Chat details">${ICON.sidebar}</button>
           <button class="icon-btn" data-act="edit-bot" title="Settings" aria-label="Settings">${ICON.gear}</button>`
         : `<button class="icon-btn" data-act="edit-room" title="Settings" aria-label="Settings">${ICON.gear}</button>`}
@@ -917,10 +922,22 @@ function renderMain() {
         <button type="button" class="plus mic" data-act="dictate" aria-label="Dictate" title="Dictate (tap to start, tap to stop)">${ICON.mic}</button>
         <input type="file" id="file-pick" multiple hidden>
         <label for="msg" class="sr">Message</label>
-        <textarea id="msg" rows="1" placeholder="${isBot ? `Message ${esc(b.name)}` : `Message ${esc(r.name)} · @ a bot to direct it`}"></textarea>
+        <textarea id="msg" rows="1" placeholder="${isBot ? `Message ${esc(b.name)}${codeProject(threadKey())?.p.members.length > 1 ? ' · @ a bot to hand it work' : ''}` : `Message ${esc(r.name)} · @ a bot to direct it`}"></textarea>
         <button class="send" aria-label="Send">${ICON.send}</button>
       </form>
     </div>`}`;
+  const cm = CM.on && isBot && codeProject(threadKey());
+  if (cm) { // Nimbus Code: a quiet header, project / thread, like T3 Code
+    const ini = (cm.p.name.match(/[A-Za-z0-9]+/g) || ['?']).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+    main.querySelector('.head').innerHTML = `<button class="icon-btn menu-btn" data-act="menu" aria-label="Menu">${ICON.menu}</button>
+      <span class="cm-crumb"><i class="cm-badge">${esc(ini)}</i><button class="linkish" data-code-edit-p="${cm.p.id}">${esc(cm.p.name)}</button> <span class="muted">/</span> <button class="linkish" data-act="thread-menu"><b>${esc(cm.t.title || 'New thread')}</b></button></span>
+      <div class="actions">${(S.data.busyThreads || []).includes(threadKey()) ? `<span class="status working">${esc(b.name)} working</span>` : ''}
+        <label class="effort" title="Effort"><button class="effort-btn" data-act="effort-menu" aria-label="Effort" aria-haspopup="menu">${avatar(b, 16)} ${esc(b.name)} · ${esc(EFFORTS.find(([v]) => v === b.effort)?.[1] || 'Medium')}</button></label>
+        <button class="icon-btn" data-act="files" title="Files in this chat" aria-label="Files">${ICON.folder}</button>
+        <button class="icon-btn" data-act="panel" title="Activity" aria-label="Activity">${ICON.bell}${pending ? `<i class="count hot">${pending}</i>` : ''}</button>
+        <button class="icon-btn code-btn" data-act="code-pane" title="Code panel" aria-label="Code panel">${CODE_ICON}</button></div>`;
+    const ta = $('#msg'); if (ta) ta.placeholder = `Ask ${b.name} anything${cm.p.members.length > 1 ? ' · @ a bot to hand it work' : ''}`;
+  }
   if (!$('#msg')) { const th = $('#thread'); th.scrollTop = th.scrollHeight; return; }
   attachAutocorrect($('#msg'));
   if (isRecording() || browserStop) micState('recording'); // re-render during dictation
@@ -950,7 +967,8 @@ function renderMessages() {
 
 // Show the bot's name above its bubble in group chats, when the speaker changes.
 function speakerLabel(m, prev) {
-  if (S.current?.type !== 'room' || m.author === 'user') return '';
+  if (m.author === 'user') return '';
+  if (S.current?.type !== 'room' && !(codeProject(threadKey())?.p.members.length > 1)) return '';
   if (prev && prev.author === m.author && prev.kind !== 'note') return '';
   const b = bot(m.author);
   return `<div class="speaker">${avatar(b, 18)}<span style="color:${esc(b?.color || '#999')}">${esc(b?.name || 'Deleted bot')}</span></div>`;
@@ -1059,6 +1077,34 @@ function slashHint(v) {
   if (!box) { box = document.createElement('div'); box.id = 'slash-hint'; box.className = 'slash-hint'; $('.composer').prepend(box); }
   box.innerHTML = items.map((i) => `<button type="button" data-slash="${esc(i.c)}" data-args="${i.a ? 1 : ''}" data-api="${i.api ? 1 : ''}"><b>${esc(i.c)}</b>${i.a ? `<i>${esc(i.a)}</i>` : ''}<span>${esc(i.d)}</span>${i.src ? `<em>${esc(i.src)}</em>` : ''}</button>`).join('');
 }
+// @ in a group chat or Nimbus Code thread: pick a bot to hand the message to.
+function mentionBots() {
+  if (CM.draft) return (projectOf(CM.draft.project)?.members || []).map(bot).filter(Boolean);
+  if (S.current?.type === 'room') return (room(S.current.id)?.members || []).map(bot).filter(Boolean);
+  const c = codeProject(threadKey()); return c ? c.p.members.map(bot).filter(Boolean) : [];
+}
+function mentionHint(ta) {
+  const m = ta.value.slice(0, ta.selectionStart).match(/(?:^|\s)@([\w-]*)$/);
+  const q = m?.[1].toLowerCase();
+  const list = m ? mentionBots().filter((b) => b.name.toLowerCase().split(/\s+/).some((w) => w.startsWith(q)) || b.name.toLowerCase().startsWith(q)) : [];
+  let box = $('#mention-hint');
+  if (!list.length) return box?.remove();
+  if (!box) { box = document.createElement('div'); box.id = 'mention-hint'; box.className = 'slash-hint mention-hint'; $('.composer').prepend(box); }
+  box.innerHTML = list.map((b, i) => `<button type="button" class="${i === 0 ? 'on' : ''}" data-mention="${b.id}">${avatar(b, 20)}<b>${esc(b.name)}</b><span>${esc(b.role || '')}</span></button>`).join('');
+}
+function pickMention(id) {
+  const ta = $('#msg'), b = bot(Number(id)); $('#mention-hint')?.remove(); if (!ta || !b) return;
+  const pos = ta.selectionStart, before = ta.value.slice(0, pos).replace(/@[\w-]*$/, '@' + b.name + ' ');
+  ta.value = before + ta.value.slice(pos); ta.focus(); ta.setSelectionRange(before.length, before.length); autosize(ta);
+}
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-mention]'); if (b) pickMention(b.dataset.mention); });
+document.addEventListener('keydown', (e) => {
+  const box = $('#mention-hint'); if (e.target.id !== 'msg' || !box) return;
+  const items = [...box.querySelectorAll('[data-mention]')], i = items.findIndex((x) => x.classList.contains('on'));
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); e.stopImmediatePropagation(); items[i]?.classList.remove('on'); items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].classList.add('on'); }
+  else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); e.stopImmediatePropagation(); pickMention(items[Math.max(i, 0)].dataset.mention); }
+  else if (e.key === 'Escape') { e.stopImmediatePropagation(); box.remove(); }
+}, true);
 document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-slash]'); if (!b) return;
   const ta = $('#msg'); $('#slash-hint')?.remove();
@@ -1314,6 +1360,7 @@ function renderMessage(m, prev) {
   if (m.kind === 'quiet') return `<div class="note quiet-ok" data-mid="${m.id}" title="Quiet check at ${clock(m.created_at)}">✓ All clear · ${esc(m.body)} <span class="muted">· ${clock(m.created_at)}</span></div>`;
   const b = bot(m.author) || { name: 'Deleted bot', color: '#555' };
   if (m.kind === 'trace') return renderTrace(m, prev);
+  if (m.kind === 'changes') return renderChanges(m);
   if (m.kind === 'approval') return renderApproval(m, b, prev);
   if (m.kind === 'docuse') {
     let u = {}; try { u = JSON.parse(m.body); } catch {}
@@ -1366,7 +1413,7 @@ function renderTrace(m, prev) {
   return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<details class="trace ${running ? 'live' : ''} ${waiting ? 'paused' : ''}" ${open ? 'open' : ''} data-started="${t.started}">
     <summary>${running ? LOADER : ICON.chevron}<span>${label}</span><span class="sp"><span data-dur>${dur}</span>${traceStats(t)}</span>${running ? `<button class="stop" data-stop="${m.run_id}">Stop</button>` : ''}</summary>
     <div class="steps">
-      ${t.steps.map((s) => `<div class="step"><span class="mark ${s.state}">${mark[s.state] ?? ''}</span><span>${esc(s.text)}</span></div>`).join('')}
+      ${t.steps.map((s) => codeStepHtml(s, mark[s.state] ?? '') ?? `<div class="step"><span class="mark ${s.state}">${mark[s.state] ?? ''}</span><span>${esc(s.text)}</span></div>`).join('')}
       ${running && t.lastThought ? `<div class="thought">${esc(t.lastThought)}</div>` : ''}
     </div>
   </details></div>`;
@@ -1406,6 +1453,7 @@ async function openThread(key) {
   const prev = threadKey();
   if (prev) sessionDraft.set(prev, $('#msg')?.value || '');
   S.current = { type, id: Number(id), ...(thread ? { thread } : {}) };
+  CM.draft = null; setCodeMode(!!codeProject(key) && !EMBED); if (!CM.on) S.lastPlain = key;
   // The browser pane follows the chat: switching bots shows the new bot's own browser.
   if (BR.bot && !(type === 'bot' && Number(id) === BR.bot)) { if (type === 'bot') openBrowser(Number(id)); else closeDoc(); }
   history.replaceState(null, '', '#' + key);
@@ -1414,6 +1462,7 @@ async function openThread(key) {
   S.loadingThread = true; S.messages = [];
   $('#side').classList.remove('open'); $('#aside').classList.remove('open');
   renderSide(); renderMain();
+  codeThreadOpened(key);
   S.messages = await api(`/api/threads/${encodeURIComponent(key)}/messages`);
   S.loadingThread = false;
   if (threadKey() === key) { renderMain(); $('.thread-inner')?.classList.add('fade-in'); }
@@ -1477,6 +1526,7 @@ function connect() {
   const soon = () => { clearTimeout(pending); pending = setTimeout(async () => { await refreshState(); if (S.current) updateHeaderBits(); }, 150); };
   for (const ev of ['bot_status', 'state_changed', 'approvals_changed']) es.addEventListener(ev, soon);
   es.addEventListener('docs_changed', () => fileDocsChanged());
+  es.addEventListener('code_changed', (e) => { const d = JSON.parse(e.data); onCodeChanged(d.thread, d.file); });
   es.addEventListener('doc_changed', (e) => {
     const m = JSON.parse(e.data);
     if (m.id !== DOC.id) return;
@@ -3076,6 +3126,10 @@ document.addEventListener('click', async (e) => {
     menuProject = p;
     return popover(t, p.members.filter((id) => bot(id)).map((id) => ['ptb:' + id, `With ${esc(bot(id).name)}`, avatar(bot(id), 18)]));
   }
+  if (t.dataset.codeEditP) return codeProjectModal(projectOf(Number(t.dataset.codeEditP)));
+  if (t.dataset.act?.startsWith('code-task:')) { closePopover(); return newCodeThread(Number(t.dataset.act.slice(10))); }
+  if (t.dataset.act?.startsWith('code-del:')) { closePopover(); return deleteCodeProject(projectOf(Number(t.dataset.act.slice(9)))).catch((err) => toast(err.message)); }
+  if (t.dataset.act?.startsWith('code-edit:')) { closePopover(); return codeProjectModal(projectOf(Number(t.dataset.act.slice(10)))); }
   if (t.dataset.act?.startsWith('ptb:')) { closePopover(); return newThread(Number(t.dataset.act.slice(4)), menuProject.id); }
   if (t.dataset.computer) { const cb = bot(t.dataset.computer); if (cb) return computerModal(cb); }
   if (t.dataset.qcancel) { try { await api(`/api/messages/${t.dataset.qcancel}/queued`, { method: 'POST', body: { action: 'cancel' } }); toast('Removed from the queue'); } catch (err) { toast(err.message); } return; }
@@ -3113,7 +3167,7 @@ document.addEventListener('click', async (e) => {
   const act = t.dataset.act;
   if (act) closePopover();
   switch (act) {
-    case 'new-menu': e.stopPropagation(); return popover(t, [...(cur ? [['new-thread', `New thread with ${esc(cur.name)}`, TI.chat]] : []), ['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['new-side-group', 'New sidebar group', ICON.folder], ['new-shared-project', 'New shared project', ICON.folder], ['market', 'Browse Connectors', ICON.grid]]);
+    case 'new-menu': e.stopPropagation(); return popover(t, [...(cur ? [['new-thread', `New thread with ${esc(cur.name)}`, TI.chat]] : []), ['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['new-side-group', 'New sidebar group', ICON.folder], ['new-shared-project', 'New shared project', ICON.folder], ['new-code-project', 'New Nimbus Code project', CODE_ICON], ['market', 'Browse Connectors', ICON.grid]]);
     case 'claude': return claudeModal();
     case 'docs': return docsModal();
     case 'artifacts': return openArtifacts();
@@ -3155,6 +3209,8 @@ document.addEventListener('click', async (e) => {
     case 'pr-edit': return menuProject && projectModal(menuProject);
     case 'pr-thread': return menuProject && (menuProject.owner_bot_id != null ? newThread(menuProject.owner_bot_id, menuProject.id) : null);
     case 'new-shared-project': return projectModal(null, { shared: true });
+    case 'new-code-project': return codeProjectModal();
+    case 'code-pane': return toggleCodePane();
     case 'side-recent': S.data.sideOrder = null; renderSide(); return api('/api/side-order', { method: 'PUT', body: { order: null } });
     case 'effort-menu': {
       e.stopPropagation(); closePopover();
@@ -3199,7 +3255,7 @@ document.addEventListener('toggle', (e) => {
   if (e.target.matches?.('details.trace')) { const id = Number(e.target.closest('[data-mid]').dataset.mid); e.target.open ? openTraces.add(id) : openTraces.delete(id); }
 }, true);
 document.addEventListener('input', (e) => {
-  if (e.target.id === 'msg') { autosize(e.target); slashHint(e.target.value); }
+  if (e.target.id === 'msg') { autosize(e.target); slashHint(e.target.value); mentionHint(e.target); }
   if (e.target.id === 'side-search') { sideQuery = e.target.value.trim().toLowerCase(); refreshSideOnly(); }
 });
 let searchSeq = 0, searchTimer;
@@ -3231,6 +3287,8 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('submit', async (e) => {
   if (e.target.id !== 'composer') return;
   e.preventDefault();
+  $('#mention-hint')?.remove();
+  if (CM.draft) return codeDraftSend();
   const ta = $('#msg'); const text = ta.value.trim();
   if (!attachments.length && runSlash(text)) { ta.value = ''; autosize(ta); $('#slash-hint')?.remove(); return; }
   if (attachments.some((a) => !a.id && !a.error)) return toast('Still uploading…');
@@ -3493,6 +3551,7 @@ applyTheme();
   const hash = location.hash.slice(1);
   const first = Object.entries(S.data.last).sort((a, b) => b[1].at - a[1].at)[0]?.[0];
   if (/^(bot|room|t):\d+$/.test(hash)) openThread(hash);
+  else if (hash === 'code' && !EMBED) newCodeThread();
   else if (EMBED) renderMain();
   else if (/^doc:d_[0-9a-f]+$/.test(hash)) { if (first || S.data.bots[0]) await openThread(first || 'bot:' + S.data.bots[0].id); openDoc(hash.slice(4)); }
   else if (matchMedia('(min-width: 761px)').matches && (first || S.data.bots[0])) openThread(first || 'bot:' + S.data.bots[0].id);

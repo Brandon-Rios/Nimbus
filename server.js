@@ -13,8 +13,9 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import * as Docs from './docs.js';
 import { UPLOADS, MAX_UPLOAD, safeName, uploadPath, readUpload, saveUpload, addVersion, registerFiles } from './files.js';
 import { claudeEnv, claudeStatus, setClaudeToken, TOKEN_RE } from './claudeauth.js';
-import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport, cancelQueued, editQueued, threadLimit } from './runner.js';
+import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport, cancelQueued, editQueued, threadLimit, projectBots } from './runner.js';
 import * as TH from './threads.js';
+import * as Code from './code.js';
 import { botCommands } from './slash.js';
 import { loadTools, approveTool, runTool, SCAN_PROMPT } from './apitools.js';
 import { ensureBrowser, watchBrowser, browserInput, closeBrowser } from './browser.js';
@@ -121,7 +122,8 @@ function state(req) {
   const sideOrder = JSON.parse(getSetting('side_order') || 'null'); // custom sidebar order, or null = most recent first
   const sideGroups = JSON.parse(getSetting('side_groups') || '[]'); // sidebar groups: [{ id, name, collapsed, keys }]
   const { threads, projects } = TH.listAll();
-  return { sideOrder, sideGroups, threads, projects, threadLimit: threadLimit(), bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), claude: claudeStatus(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
+  const busyThreads = q("SELECT DISTINCT thread FROM runs WHERE status='running'").all().map((r) => r.thread);
+  return { busyThreads, sideOrder, sideGroups, threads, projects, threadLimit: threadLimit(), bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), claude: claudeStatus(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
 }
 
 function postToThread(thread, text, files = [], voice = null) {
@@ -139,7 +141,11 @@ function postToThread(thread, text, files = [], voice = null) {
     // API tools run since the bot last worked here: tell it what the user saw, so it can answer about it.
     const notes = toolNotes.get(thread);
     if (notes?.length) { toolNotes.delete(thread); text = `(Before this message, the user ran your API tools in Nimbus. What they saw:\n${notes.join('\n\n').slice(-6000)}\n)\n\n` + text; }
-    runBot({ botId: TH.threadBot(thread), thread, prompt: text, msgId: msg.id, msgText: msg.body, voice });
+    // Nimbus Code: "@Name do this" sends it to that bot in the project (each bot keeps its own conversation here).
+    const code = Code.threadCode(thread);
+    const targets = code ? findMentions(text, projectBots(code.p.id)) : [];
+    if (targets.length) for (const b of targets) runBot({ botId: b.id, thread, prompt: text, msgId: b === targets[0] ? msg.id : null, msgText: msg.body, source: 'the user' });
+    else runBot({ botId: TH.threadBot(thread), thread, prompt: text, msgId: msg.id, msgText: msg.body, voice });
   } else if (thread.startsWith('room:')) {
     const roomId = Number(thread.slice(5));
     const room = q('SELECT * FROM rooms WHERE id=?').get(roomId);
@@ -611,16 +617,90 @@ const thOk = (res, extra = {}) => { broadcast('state_changed', {}); json(res, 20
 const thTry = (fn) => async (req, res, p) => { try { await fn(req, res, p); } catch (e) { json(res, 400, { error: e.message }); } };
 route('POST', '/api/threads', thTry(async (req, res) => {
   const b = await body(req);
-  thOk(res, { key: TH.createThread({ botId: b.botId, title: b.title || '', projectId: b.projectId ?? null }) });
+  const key = TH.createThread({ botId: b.botId, title: b.title || '', projectId: b.projectId ?? null });
+  try { await Code.setupThread(Number(key.slice(2)), b.ownBranch !== false); }
+  catch (e) { TH.deleteThread(Number(key.slice(2))); throw new Error(`Couldn't make the branch: ${e.message}`); }
+  thOk(res, { key });
 }));
 route('PATCH', '/api/threads/:id', thTry(async (req, res, p) => { TH.updateThread(p.id, await body(req)); thOk(res); }));
 route('DELETE', '/api/threads/:id', thTry((req, res, p) => { TH.deleteThread(p.id); thOk(res); }));
 route('POST', '/api/projects', thTry(async (req, res) => {
   const b = await body(req);
-  thOk(res, { id: TH.createProject({ name: b.name, instructions: b.instructions, ownerBotId: b.ownerBotId ?? null, members: b.members }) });
+  const repo = b.code ? await Code.setupRepo({ name: b.name, source: b.source, url: b.url, folder: b.folder }) : null;
+  thOk(res, { id: TH.createProject({ name: b.name, instructions: b.instructions, ownerBotId: b.ownerBotId ?? null, members: b.members, repo, testCmd: b.testCmd, previewCmd: b.previewCmd }) });
 }));
 route('PATCH', '/api/projects/:id', thTry(async (req, res, p) => { TH.updateProject(p.id, await body(req)); thOk(res); }));
 route('DELETE', '/api/projects/:id', thTry((req, res, p) => { TH.deleteProject(p.id); thOk(res); }));
+// ---------- Nimbus Code (code.js) ----------
+route('GET', '/api/code/repos', (req, res) => json(res, 200, { root: Code.CODE_ROOT, repos: Code.listRepos() }));
+const codeTry = (fn) => async (req, res, p, url) => { try { json(res, 200, await fn(decodeURIComponent(p.thread), req, url, p)); } catch (e) { json(res, e.status || 500, { error: e.message }); } };
+route('GET', '/api/code/:thread', codeTry((k) => Code.info(k)));
+route('GET', '/api/code/:thread/files', codeTry((k) => Code.listFiles(k)));
+route('GET', '/api/code/:thread/file', codeTry((k, req, url) => Code.readFile(k, url.searchParams.get('path'))));
+route('PUT', '/api/code/:thread/file', codeTry(async (k, req) => { const b = await body(req); return Code.writeFile(k, b.path, b.text, b.mtime); }));
+route('GET', '/api/code/:thread/github', codeTry((k) => Code.githubAbout(k)));
+route('POST', '/api/projects/:id/github', async (req, res, p) => { try { json(res, 200, await Code.connectGithub(p.id, (await body(req)).url)); } catch (e) { json(res, e.status || 500, { error: e.message }); } });
+route('GET', '/api/code/:thread/diff', codeTry(async (k, req, url) => ({ diff: await Code.diff(k, url.searchParams.get('what') || 'working', url.searchParams.get('ref')) })));
+route('GET', '/api/code/:thread/suggest', codeTry(async (k) => ({ message: await Code.suggestMessage(k) })));
+route('POST', '/api/code/:thread/commit', codeTry(async (k, req) => Code.commit(k, (await body(req)).message)));
+route('POST', '/api/code/:thread/merge', codeTry(async (k) => { const r = await Code.merge(k); const c = Code.threadCode(k); addMessage(k, 'system', 'note', `Merged ${c.t.branch} into ${c.t.base}.`); return r; }));
+route('POST', '/api/code/:thread/push', codeTry(async (k) => { const r = await Code.push(k); addMessage(k, 'system', 'note', `Pushed ${r.branch}.`); return r; }));
+route('POST', '/api/code/:thread/undo/:run', codeTry(async (k, req, url, p) => { const r = await Code.undoTurn(p.run); addMessage(k, 'system', 'note', `Undid that turn (${r.files} file${r.files === 1 ? '' : 's'} put back).`); return r; }));
+route('POST', '/api/code/:thread/tests', codeTry(async (k) => {
+  Code.runTests(k).then((r) => addMessage(k, 'system', 'note', r.ok ? `🧪 Tests passed (${r.secs}s)` : `🧪 Tests failed (${r.secs ?? 0}s). See Tests in the code panel.`));
+  return { ok: true };
+}));
+route('POST', '/api/code/:thread/preview', codeTry(async (k, req) => ((await body(req)).stop ? (Code.stopPreview(k), { running: false }) : Code.startPreview(k))));
+route('GET', '/api/code/:thread/term', (req, res, p) => {
+  let t; try { t = Code.terminal(decodeURIComponent(p.thread)); } catch (e) { return json(res, e.status || 500, { error: e.message }); }
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+  const send = (s) => { if (s === null) { res.write('event: end\ndata: {}\n\n'); return res.end(); } res.write(`data: ${JSON.stringify(s)}\n\n`); };
+  if (t.buf) send(t.buf);
+  t.listeners.add(send);
+  req.on('close', () => t.listeners.delete(send));
+});
+route('POST', '/api/code/:thread/term', codeTry(async (k, req) => {
+  const b = await body(req);
+  if (b.close) Code.termClose(k); else if (b.cols) Code.termResize(k, b.cols, b.rows); else Code.termInput(k, String(b.data || '').slice(0, 65536));
+  return { ok: true };
+}));
+
+// Preview proxy: a port of its own per running preview (8900-8949), login required, HTTP or HTTPS on the same port.
+const PREVIEW_BASE = Number(process.env.NIMBUS_PREVIEW_PORT || 8900);
+Code.setPreviewProxy(async (target) => {
+  const handler = (req, res) => {
+    if (!loggedIn(req)) { res.writeHead(401, { 'content-type': 'text/plain' }); return res.end('Log in to Nimbus first.'); }
+    const up = http.request({ host: '127.0.0.1', port: target(), path: req.url, method: req.method, headers: { ...req.headers, host: `127.0.0.1:${target()}` } }, (r) => {
+      const h = { ...r.headers }; delete h['x-frame-options']; delete h['content-security-policy'];
+      res.writeHead(r.statusCode, h); r.pipe(res);
+    });
+    up.on('error', () => { if (!res.headersSent) { res.writeHead(502, { 'content-type': 'text/html' }); res.end('<body style="font:15px system-ui;padding:24px;color:#888">The app isn’t answering yet. It may still be starting; this page reloads in a moment.<script>setTimeout(()=>location.reload(),2000)</script>'); } else res.end(); });
+    req.pipe(up);
+  };
+  const upgrade = (req, sock, head) => {
+    if (!loggedIn(req)) return sock.destroy();
+    const up = net.connect(target(), '127.0.0.1', () => {
+      up.write(`${req.method} ${req.url} HTTP/1.1\r\n` + Object.entries(req.headers).map(([k, v]) => `${k}: ${v}`).join('\r\n') + '\r\n\r\n');
+      if (head?.length) up.write(head);
+      sock.pipe(up).pipe(sock);
+    });
+    up.on('error', () => sock.destroy()); sock.on('error', () => up.destroy());
+  };
+  const plain = http.createServer(handler); plain.on('upgrade', upgrade);
+  let secure = null; try { secure = https.createServer(tlsFiles(), handler); secure.on('upgrade', upgrade); } catch {}
+  // Peek at the first byte without consuming it: 0x16 starts a TLS handshake.
+  const front = net.createServer((sock) => {
+    sock.on('error', () => {});
+    sock.once('readable', () => { const d = sock.read(1); if (!d) return sock.destroy(); sock.unshift(d); (d[0] === 0x16 && secure ? secure : plain).emit('connection', sock); });
+  });
+  for (let port = PREVIEW_BASE; port < PREVIEW_BASE + 50; port++) {
+    const ok = await new Promise((resolve) => { front.once('error', () => resolve(false)); front.listen(port, HOST, () => resolve(true)); });
+    if (ok) return { proxyPort: port, closeProxy: () => front.close() };
+  }
+  throw new Error('No free preview port');
+});
+process.on('exit', () => Code.stopAll());
+
 // For bots (bin/thread.mjs): list, or make a thread or project when the user asks.
 route('POST', '/api/hook/threads', thTry(async (req, res) => {
   if (!hookAuth(req)) return json(res, 403, { error: 'forbidden' });
@@ -1386,7 +1466,7 @@ route('GET', '/api/hook/approval/:id', (req, res, p) => {
 });
 
 // ---------- server ----------
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.webp': 'image/webp' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.mjs': 'text/javascript', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.webp': 'image/webp' };
 
 // ---------- login ----------
 // The app is meant to be reachable from the internet, so some login method is required:
