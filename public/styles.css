@@ -1193,3 +1193,17 @@ body.code-mode .effort-btn { display: inline-flex; align-items: center; gap: 6px
 body.code-dragging { cursor: col-resize; user-select: none; }
 body.code-dragging iframe { pointer-events: none; }
 body.code-dragging .codepane, body.code-dragging .panes { transition: none !important; }
+/* Phones: the title and thread name keep their room; the icon row scrolls sideways instead of overlapping them,
+   the status shows as just its dot, and split panes (no room on a phone) are hidden. */
+@media (max-width: 760px) {
+  .head { gap: 4px; }
+  .head .title { flex: 0 0 auto; padding-right: 4px; }
+  .head .title b { display: none; }
+  .head .status { font-size: 0; gap: 0; }
+  .head .th-crumb { flex: 0 1 auto; max-width: 38%; margin-right: 0; }
+  .head .actions { flex: 1 1 0; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .head .actions::-webkit-scrollbar { display: none; }
+  .head .actions > * { flex-shrink: 0; }
+  .head .actions > [data-act="pane-menu"] + * { margin-left: auto; }
+  .head .actions [data-act="pane-menu"] { display: none; }
+}
