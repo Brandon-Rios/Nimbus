@@ -1464,9 +1464,33 @@ async function openThread(key) {
   renderSide(); renderMain();
   codeThreadOpened(key);
   S.messages = await api(`/api/threads/${encodeURIComponent(key)}/messages`);
+  S.hasOlder = S.messages.length >= PAGE; S.loadingOlder = false;
   S.loadingThread = false;
   if (threadKey() === key) { renderMain(); $('.thread-inner')?.classList.add('fade-in'); }
 }
+
+// Older messages load in pages as you scroll up to the top of a chat.
+const PAGE = 80; // the server's page size
+async function loadOlder() {
+  const key = threadKey(), th = $('#thread'), first = S.messages[0];
+  if (!key || !th || !first || !S.hasOlder || S.loadingOlder || S.loadingThread) return;
+  S.loadingOlder = true; th.classList.add('loading-older');
+  try {
+    const older = await api(`/api/threads/${encodeURIComponent(key)}/messages?before=${first.id}`);
+    if (threadKey() !== key || S.messages[0] !== first) return;
+    S.hasOlder = older.length >= PAGE;
+    const add = older.filter((m) => m.id < first.id);
+    if (!add.length) return;
+    const inner = $('.thread-inner', th), h0 = th.scrollHeight, top0 = th.scrollTop;
+    S.messages = [...add, ...S.messages];
+    inner.insertAdjacentHTML('afterbegin', add.map((m, i) => renderMessage(m, add[i - 1])).join(''));
+    // The message that was first now has one before it (speaker labels depend on that).
+    const el = inner.querySelector(`[data-mid="${first.id}"]`); if (el) el.outerHTML = renderMessage(first, add[add.length - 1]);
+    th.scrollTop = top0 + (th.scrollHeight - h0); // keep what you were reading in place
+  } catch (e) { toast(e.message); }
+  finally { S.loadingOlder = false; th.classList.remove('loading-older'); }
+}
+document.addEventListener('scroll', (e) => { if (e.target.id === 'thread' && e.target.scrollTop < 400) loadOlder(); }, true);
 
 let stateSeq = 0;
 async function refreshState() {

@@ -73,7 +73,14 @@ for (const [col, type] of [['shape', "TEXT DEFAULT 'blob'"], ['template', "TEXT 
   if (!db.prepare('PRAGMA table_info(bots)').all().some((c) => c.name === col)) db.exec(`ALTER TABLE bots ADD COLUMN ${col} ${type}`);
 }
 
-export const q = (sql) => db.prepare(sql);
+// Prepared statements are kept and reused (the same few hundred queries run over and over). The cap is for the
+// handful built with a number inside the text.
+const prepared = new Map();
+export const q = (sql) => {
+  let st = prepared.get(sql);
+  if (!st) { if (prepared.size > 800) prepared.clear(); prepared.set(sql, st = db.prepare(sql)); }
+  return st;
+};
 
 export function parseBot(b) {
   if (!b) return b;

@@ -57,6 +57,9 @@ export function wrap(cmd, args, botDir, { sharedLogin = false, work = [], chdir 
   const ro = (p) => { if (fs.existsSync(p)) b.push('--ro-bind', p, p); };
   const rw = (p) => b.push('--bind', p, p);
   for (const p of ['.npm-global', '.local', 'opt', '.cache/ms-playwright', '.claude/plugins', '.claude/skills', '.claude/settings.json']) ro(path.join(HOME, p));
+  // Playwright MCP writes a small registry file in ms-playwright/b; give each bot its own writable copy of that folder.
+  const pwReg = path.join(HOME, '.cache', 'ms-playwright', 'b');
+  if (fs.existsSync(pwReg)) { const mine = path.join(state, 'playwright-b'); fs.mkdirSync(mine, { recursive: true }); b.push('--bind', mine, pwReg); }
   ro(path.join(HERE, 'bin')); ro(path.join(HERE, 'hooks'));
   // Runs without a pasted Claude token use the server's login, so they need to read it.
   if (sharedLogin) ro(path.join(HOME, '.claude', '.credentials.json'));

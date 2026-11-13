@@ -1,5 +1,6 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1186,15 +1187,37 @@ route('GET', '/api/backup', (req, res) => json(res, 200, { last: JSON.parse(getS
 route('POST', '/api/backup', async (req, res) => json(res, 200, await runBackup()));
 
 // ---------- search, activity log, usage by bot ----------
+// Full-text index of readable messages (not run traces), kept current by triggers; built once from what's there.
+const FTS_KINDS = "('text','quiet','note')";
+if (!q("SELECT 1 FROM sqlite_master WHERE name='messages_fts'").get()) {
+  db.exec(`CREATE VIRTUAL TABLE messages_fts USING fts5(body, content='messages', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
+    INSERT INTO messages_fts(rowid, body) SELECT id, body FROM messages WHERE kind IN ${FTS_KINDS};`);
+}
+db.exec(`CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages WHEN new.kind IN ${FTS_KINDS} BEGIN
+    INSERT INTO messages_fts(rowid, body) VALUES (new.id, new.body); END;
+  CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages WHEN old.kind IN ${FTS_KINDS} BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, body) VALUES ('delete', old.id, old.body); END;
+  CREATE TRIGGER IF NOT EXISTS messages_fts_au_old AFTER UPDATE OF body, kind ON messages WHEN old.kind IN ${FTS_KINDS} BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, body) VALUES ('delete', old.id, old.body); END;
+  CREATE TRIGGER IF NOT EXISTS messages_fts_au_new AFTER UPDATE OF body, kind ON messages WHEN new.kind IN ${FTS_KINDS} BEGIN
+    INSERT INTO messages_fts(rowid, body) VALUES (new.id, new.body); END;`);
+// Every word must appear (the last one may be the start of a word, as you type); quotes keep FTS syntax out.
+const ftsQuery = (term) => term.split(/\s+/).map((w) => w.replace(/"/g, '')).filter(Boolean).map((w, i, a) => `"${w}"${i === a.length - 1 ? '*' : ''}`).join(' ');
 route('GET', '/api/search', (req, res, _p, url) => {
   const term = String(url.searchParams.get('q') || '').trim();
   if (term.length < 2) return json(res, 200, { results: [] });
   const like = '%' + term.replace(/[\\%_]/g, (c) => '\\' + c) + '%';
-  const rows = q(`SELECT id, thread, author, body, created_at FROM messages WHERE kind IN ('text','quiet','note') AND body LIKE ? ESCAPE '\\'
+  const fq = ftsQuery(term);
+  let rows = [];
+  try { rows = fq ? q(`SELECT m.id, m.thread, m.author, m.body, m.created_at FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid
+    WHERE messages_fts MATCH ? ORDER BY m.id DESC LIMIT 40`).all(fq) : []; } catch { rows = []; }
+  // Nothing as whole words: fall back to matching inside words (e.g. part of a ticket number).
+  if (!rows.length) rows = q(`SELECT id, thread, author, body, created_at FROM messages WHERE kind IN ${FTS_KINDS} AND body LIKE ? ESCAPE '\\'
     ORDER BY id DESC LIMIT 40`).all(like);
-  const low = term.toLowerCase();
+  const words = term.toLowerCase().split(/\s+/).filter(Boolean);
   json(res, 200, { results: rows.map((m) => {
-    const i = m.body.toLowerCase().indexOf(low), start = Math.max(0, i - 50);
+    const lowBody = m.body.toLowerCase(), hit = [term.toLowerCase(), ...words].map((w) => lowBody.indexOf(w)).find((i) => i >= 0) ?? 0;
+    const start = Math.max(0, hit - 50);
     return { id: m.id, thread: m.thread, author: m.author, at: m.created_at,
       snippet: (start ? '…' : '') + m.body.slice(start, start + 160).replace(/\s+/g, ' ') + (start + 160 < m.body.length ? '…' : '') };
   }) });
@@ -1746,6 +1769,7 @@ async function proxyDesktopUpgrade(req, socket, head) {
   up.on('error', close); socket.on('error', close); socket.on('close', close);
 }
 
+const zipped = new Map(); // static file -> { etag, buf }
 async function handle(req, res) {
   try {
     const url = new URL(req.url, 'http://x');
@@ -1760,7 +1784,17 @@ async function handle(req, res) {
     if (req.method !== 'GET' || url.pathname.startsWith('/api/')) return json(res, 404, { error: 'not found' });
     let file = path.join(PUBLIC, path.normalize(url.pathname).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(PUBLIC) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(PUBLIC, 'index.html');
-    res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'x-frame-options': 'SAMEORIGIN', 'content-security-policy': "frame-ancestors 'self'", 'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin', 'cache-control': 'no-cache' });
+    // The browser still checks every time (no-cache) but gets a tiny "not changed" answer, and text goes out compressed.
+    const st = fs.statSync(file), etag = `"${st.size.toString(36)}-${Math.round(st.mtimeMs).toString(36)}"`;
+    const head = { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'x-frame-options': 'SAMEORIGIN', 'content-security-policy': "frame-ancestors 'self'", 'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin', 'cache-control': 'no-cache', etag, vary: 'accept-encoding' };
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, head); return res.end(); }
+    if (/\.(html|js|css|svg|json|webmanifest)$/.test(file) && /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''))) {
+      let z = zipped.get(file);
+      if (!z || z.etag !== etag) zipped.set(file, z = { etag, buf: zlib.gzipSync(fs.readFileSync(file), { level: 6 }) });
+      res.writeHead(200, { ...head, 'content-encoding': 'gzip', 'content-length': z.buf.length });
+      return res.end(z.buf);
+    }
+    res.writeHead(200, { ...head, 'content-length': st.size });
     fs.createReadStream(file).pipe(res);
   } catch (e) {
     if (!res.headersSent) json(res, 500, { error: e.message });

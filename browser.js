@@ -2,7 +2,7 @@
 // The Browser plugin (Playwright MCP) attaches to it over CDP, so the page the bot works on is the one
 // you watch live in the chat's Browser pane, and you can click, type or take over (to sign in, say).
 // Its profile lives in the bot's folder, so sign-ins survive restarts. Uses Node's built-in WebSocket.
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -36,6 +36,16 @@ const freePort = () => new Promise((ok, fail) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const cdpJson = (port, p, method = 'GET') => fetch(`http://127.0.0.1:${port}${p}`, { method, signal: AbortSignal.timeout(3000) }).then((r) => r.json());
 
+// Headless Chromium says "HeadlessChrome" in its user agent, and some sites refuse it as an unsupported
+// browser. Present the same version as plain desktop Chrome instead.
+let UA = null;
+function userAgent(chrome) {
+  if (UA) return UA;
+  let v = '';
+  try { v = (execFileSync(chrome, ['--version'], { timeout: 10_000 }).toString().match(/(\d+)\.\d+\.\d+\.\d+/) || [])[1] || ''; } catch {}
+  return (UA = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v || '140'}.0.0.0 Safari/537.36`);
+}
+
 // Start (or reuse) the bot's browser; resolves to its CDP port.
 export function ensureBrowser(botId) {
   botId = String(botId);
@@ -52,7 +62,7 @@ export function ensureBrowser(botId) {
     const profile = path.join(botDir(Number(bot)), user ? `browser-profile-u${Number(user)}` : 'browser-profile');
     // --no-sandbox: Ubuntu 23.10+ blocks Chromium's sandbox for unprivileged users (AppArmor), as Playwright does by default.
     nb.proc = spawn(chrome, ['--headless=new', '--no-sandbox', `--remote-debugging-port=${nb.port}`, '--remote-debugging-address=127.0.0.1',
-      `--user-data-dir=${profile}`, `--window-size=${W},${H}`, '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage', 'about:blank'],
+      `--user-data-dir=${profile}`, `--window-size=${W},${H}`, `--user-agent=${userAgent(chrome)}`, '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage', 'about:blank'],
       { stdio: 'ignore' });
     nb.proc.on('exit', () => { if (browsers.get(botId) === nb) browsers.delete(botId); nb.page?.ws.close(); for (const v of nb.viewers) v({ type: 'closed' }); });
     for (let i = 0; i < 60; i++) { try { await cdpJson(nb.port, '/json/version'); return nb.port; } catch { await sleep(250); } }
