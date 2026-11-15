@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS doc_comments (
 );
 `);
 
+// The type ends up as a CSS class in the editor: letters only.
+const blockType = (t) => (/^[a-z]{1,20}$/.test(String(t || '')) ? String(t) : 'paragraph');
+
 export class DocError extends Error {
   constructor(code, message, extra = {}) { super(message); this.code = code; Object.assign(this, extra); }
 }
@@ -174,7 +177,7 @@ function resolveTarget(list, target, opIndex) {
 const blocksFrom = (src) => {
   if (src?.markdown != null) return parseMarkdown(src.markdown);
   if (src?.text != null) return [{ type: 'paragraph', md: String(src.text), attrs: {} }];
-  if (src?.block) return [{ type: src.block.type || 'paragraph', md: String(src.block.md || ''), attrs: src.block.attrs || {} }];
+  if (src?.block) return [{ type: blockType(src.block.type), md: String(src.block.md || ''), attrs: src.block.attrs || {} }];
   throw new DocError('bad_request', 'with/source needs markdown, text or block');
 };
 
@@ -243,7 +246,7 @@ export function applyOps(docId, { ifRev = null, ops = [], title = null } = {}, a
       case 'set': { // change a block's type/attrs (e.g. heading level, todo checked) without touching its text
         const [k] = resolveTarget(list, op.target, i);
         guard(list[k], op, i);
-        if (op.type) list[k].type = String(op.type);
+        if (op.type) list[k].type = blockType(op.type);
         if (op.attrs) list[k].attrs = { ...list[k].attrs, ...op.attrs };
         touched.add(list[k].id);
         break;
@@ -320,15 +323,33 @@ export async function exportDoc(docId, format) {
   const doc = getDoc(docId);
   if (!doc) throw new DocError('not_found', 'No such document');
   const blocks = getBlocks(docId).filter((b) => b.type !== 'pending' && b.type !== 'chart');
-  const forPandoc = (b) => b.type === 'tab' ? `# ${b.attrs.title || 'Tab'}`
-    : b.type === 'image' ? b.md.replace(/\(\/api\/docs\/[^/]+\/img\/([\w.-]+)\)/, (_, n) => `(${imagePath(docId, n)})`) : blockToMarkdown(b);
-  const mdText = `---\ntitle: "${doc.title.replace(/"/g, '\\"')}"\n---\n\n` + blocks.map(forPandoc).join('\n\n') + '\n';
+  const forPandoc = (b) => b.type === 'tab' ? `# ${b.attrs.title || 'Tab'}` : b.type === 'image' ? b.md : blockToMarkdown(b);
+  const mdText = `---\ntitle: "${doc.title.replace(/[\r\n]+/g, ' ').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"\n---\n\n` + blocks.map(forPandoc).join('\n\n') + '\n';
   const safe = doc.title.replace(/[\/:*?"<>|\x00-\x1f]+/g, '').replace(/\.+$/, '').trim().slice(0, 80) || 'document';
   if (format === 'md') return { name: safe + '.md', type: 'text/markdown', buf: Buffer.from(docMarkdown(doc, blocks)) };
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbus-doc-'));
   try {
     fs.writeFileSync(path.join(tmp, 'doc.md'), mdText);
-    await run('pandoc', ['doc.md', '-f', 'gfm+yaml_metadata_block+task_lists', '-o', 'doc.docx'], { cwd: tmp }).catch((e) => {
+    // pandoc embeds whatever an image points at (a server file, a LAN address). So: parse with no file or network
+    // access, keep only this document's own pictures, and build the Word file from that.
+    await run('pandoc', ['--sandbox', 'doc.md', '-f', 'gfm+yaml_metadata_block+task_lists', '-t', 'json', '-o', 'doc.json'], { cwd: tmp }).catch((e) => {
+      throw new DocError('unavailable', /ENOENT/.test(e.message) ? 'Export needs pandoc installed on the server' : 'Export failed: ' + e.message);
+    });
+    const ownImages = (n) => {
+      if (Array.isArray(n)) return n.map(ownImages);
+      if (!n || typeof n !== 'object') return n;
+      if (n.t === 'Image') {
+        const own = String(n.c?.[2]?.[0] || '').match(/^\/api\/docs\/[^/]+\/img\/([\w.-]+)$/);
+        const file = own && imagePath(docId, own[1]);
+        if (!file || !fs.existsSync(file)) return { t: 'Span', c: [['', [], []], ownImages(n.c[1])] };
+        return { t: 'Image', c: [n.c[0], ownImages(n.c[1]), [file, n.c[2][1] || '']] };
+      }
+      if (n.t === 'RawBlock' || n.t === 'RawInline') return { t: n.t === 'RawBlock' ? 'Para' : 'Span', c: n.t === 'RawBlock' ? [] : [['', [], []], []] };
+      for (const k of Object.keys(n)) n[k] = ownImages(n[k]);
+      return n;
+    };
+    fs.writeFileSync(path.join(tmp, 'doc.json'), JSON.stringify(ownImages(JSON.parse(fs.readFileSync(path.join(tmp, 'doc.json'), 'utf8')))));
+    await run('pandoc', ['doc.json', '-f', 'json', '-o', 'doc.docx'], { cwd: tmp }).catch((e) => {
       throw new DocError('unavailable', /ENOENT/.test(e.message) ? 'Export needs pandoc installed on the server' : 'Export failed: ' + e.message);
     });
     if (format === 'docx') return { name: safe + '.docx', type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buf: fs.readFileSync(path.join(tmp, 'doc.docx')) };
