@@ -3,6 +3,7 @@ import { attachAutocorrect } from './autocorrect.js';
 import { THEMES, resolveTheme, applyThemeVars } from './themes.js';
 import { startVoice, voiceMessage } from './voice.js';
 import { LANGS, LANG_NAMES, uiLang, setUiLang, startI18n, setI18nNames } from './i18n.js';
+import { initPro, settingsPage, usagePage, statusPage, whatsNew, searchPage, tour, friendly, setConnected, queueSend } from './pro.js';
 import { initCode, codeSidebar, codeProject, codeThreadOpened, toggleCodePane, toggleBotTile, syncBotBtns, onCodeChanged, renderChanges, codeStepHtml, codeProjectModal, runInTerminal, botWorkspaceUpdate, CODE_ICON, CM, setCodeMode, codeModeSide, newCodeThread, codeDraftMain, codeDraftSend, deleteCodeProject } from './codeui.js';
 import { highlight, langOf, LANG_NAME } from './hl.js';
 import { startRecording, stopRecording, cancelRecording, isRecording, browserDictation } from './dictation.js';
@@ -54,10 +55,12 @@ const S = { data: null, current: null, messages: [], loadingThread: false, marke
 
 // ---------- API ----------
 async function api(path, opts = {}) {
-  const res = await fetch(path, { ...opts, headers: { 'content-type': 'application/json' }, body: opts.body ? JSON.stringify(opts.body) : undefined });
+  let res;
+  try { res = await fetch(path, { ...opts, headers: { 'content-type': 'application/json' }, body: opts.body ? JSON.stringify(opts.body) : undefined }); }
+  catch (e) { const err = new Error(friendly(e)); err.offline = true; throw err; }
   if (res.status === 401) { location.href = '/login'; throw new Error('Logged out'); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (!res.ok) throw new Error(friendly(data.error || 'Request failed'));
   return data;
 }
 // Downloads go through fetch so errors show, and so the Android app (whose WebView ignores download links)
@@ -101,17 +104,23 @@ async function clip(text) {
 }
 function copyText(text) { clip(text).then((ok) => toast(ok ? 'Link copied' : text)); }
 // A short message at the bottom. With { action, onAction } it gets a button (e.g. Undo) and stays a bit longer.
-function toast(text, { action, onAction, ms } = {}) {
+function toast(text, { action, onAction, ms, type } = {}) {
+  type ||= /fail|error|couldn|can.t|denied|invalid|not allowed|too |reach/i.test(text) ? 'bad' : /saved|copied|done|sent|added|deleted|approved|ready|refreshed/i.test(text) ? 'ok' : 'info';
   const t = document.createElement('div');
-  t.className = 'toast' + (action ? ' has-act' : ''); t.textContent = text;
+  t.className = `toast t-${type}` + (action ? ' has-act' : ''); t.setAttribute('role', type === 'bad' ? 'alert' : 'status');
+  const life = ms || (action ? 5000 : type === 'bad' ? 5000 : 2600);
+  t.innerHTML = `<i class="t-ico">${{ ok: '✓', bad: '!', info: 'i' }[type]}</i><span class="t-txt"></span><b class="t-bar" style="animation-duration:${life}ms"></b>`;
+  t.querySelector('.t-txt').textContent = text;
   if (action) {
     const b = document.createElement('button'); b.textContent = action;
     b.onclick = () => { onAction?.(); t.classList.add('out'); setTimeout(() => t.remove(), 220); };
     t.append(b);
   }
-  document.querySelectorAll('.toast').forEach((o) => o.remove()); // newest wins, no pile-up
-  document.body.append(t);
-  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 220); }, ms || (action ? 5000 : 2600));
+  let stack = document.getElementById('toasts');
+  if (!stack) { stack = document.createElement('div'); stack.id = 'toasts'; document.body.append(stack); }
+  [...stack.children].slice(0, -2).forEach((o) => o.remove()); // at most 3 at once
+  stack.append(t);
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 220); }, life);
 }
 
 // A light tap on phones (Android browsers and the Nimbus app); ignored elsewhere.
@@ -137,6 +146,7 @@ const bot = (id) => S.data?.bots.find((b) => b.id === Number(id));
 const room = (id) => S.data?.rooms.find((r) => r.id === Number(id));
 const threadKey = () => S.current ? S.current.thread || `${S.current.type}:${S.current.id}` : null;
 // ---------- threads and projects ----------
+const STARTERS = `<div class="starters">${['What can you help me with?', 'What did you work on recently?', 'Check your notes and suggest what to do next'].map((t) => `<button class="chip" data-starter="${t}">${t}</button>`).join('')}</div>`;
 const threadOf = (key) => { const m = /^t:(\d+)$/.exec(key || ''); return m ? (S.data?.threads || []).find((t) => t.id === Number(m[1])) || null : null; };
 const projectOf = (id) => (S.data?.projects || []).find((p) => p.id === id) || null;
 const threadName = (key) => (String(key).startsWith('bot:') ? 'General' : threadOf(key)?.title || 'New thread');
@@ -149,6 +159,7 @@ const TI = {
 };
 const sideOpen = JSON.parse(localStorage.sideOpen || '{}'); // bot id / 'p<id>' -> expanded?
 const saveSideOpen = () => { localStorage.sideOpen = JSON.stringify(sideOpen); };
+initPro({ S, api, esc, modal, closeModal, toast, bot, avatar, ICON, openThread, refreshState: () => refreshState(), stamp, threadName, botOfThread: (k) => { const m = /^bot:(\d+)$/.exec(k || ''); return m ? Number(m[1]) : threadOf(k)?.bot_id ?? null; }, kbHint: (a) => { if (a === 'palette') return 'Ctrl+K'; const c = kbGet(a); return c ? kbLabel(c) : ''; } });
 initCode({ mountBrowser: (id, el) => openBrowser(id, el), stopBrowserView: () => stopBrowserView(), browserBot: () => BR.bot, botEnvHtml, S, api, esc, modal, closeModal, toast, bot, avatar, ICON, TI, BOT_COLORS, threadKey, threadOf, openThread, refreshState, renderSide: () => renderSide(), renderMain: () => renderMain(), stamp, popover, sideOpen });
 function crumbHtml() {
   const t = threadOf(threadKey()), p = t?.project_id ? projectOf(t.project_id) : null;
@@ -766,24 +777,26 @@ function renderAside() {
   const pct = d.usage.budget ? Math.min(100, Math.round((d.usage.windowCost / d.usage.budget) * 100)) : null;
   $('#aside').innerHTML = `
     <div class="aside-head"><b>Activity</b><button class="icon-btn" data-act="panel" aria-label="Close">${ICON.close}</button></div>
-    <section>
+    <div class="af-bar">${[['all', 'All'], ['ap', 'Approvals'], ['rt', 'Routines'], ['lr', 'Learned'], ['sys', 'System']].map(([k, l]) => `<button class="af ${(localStorage.asideF || 'all') === k ? 'on' : ''}" data-af="${k}">${l}</button>`).join('')}
+      <button class="link af-read" data-act="mark-all-read" title="Mark every chat as read">Mark all read</button></div>
+    <section data-af-sec="ap">
       <h4>Approvals ${d.approvals.length ? `<span class="badge">${d.approvals.length}</span>` : ''}</h4>
       ${d.approvals.length ? d.approvals.map((a) => `
         <button class="card-item" data-open="${esc(a.thread)}">${avatar(bot(a.bot_id), 26)}<span><small>${esc(bot(a.bot_id)?.name)} · ${timeAgo(a.created_at)}</small>${esc(describeTool(a.tool, a.input))}</span></button>`).join('')
         : '<div class="muted">Nothing waiting on you.</div>'}
     </section>
-    <section>
+    <section data-af-sec="rt">
       <h4>Up next</h4>
       ${d.upNext.length ? d.upNext.map((r) => `<div class="sched"><span>${whenNext(r.next)}</span><span>${esc(bot(r.bot_id)?.name)} · ${esc(r.prompt.slice(0, 60))}</span></div>`).join('')
         : '<div class="muted">No routines yet.</div>'}
     </section>
-    <section>
+    <section data-af-sec="lr">
       <h4>Learned recently</h4>
       ${d.learned.length ? d.learned.map((l) => `<div class="learned">“${esc(l.text)}” <span class="muted">· ${esc(bot(l.botId)?.name)}</span></div>`).join('')
         : '<div class="muted">When you tell a bot a rule, it shows up here.</div>'}
     </section>
-    ${d.computers ? '<section id="comp-box"><h4>Bot computers</h4><div class="muted">Loading…</div></section>' : ''}
-    ${d.proxmox ? '<section id="pve-box"><h4>Proxmox</h4><div class="muted">Loading…</div></section>' : ''}
+    ${d.computers ? '<section data-af-sec="sys" id="comp-box"><h4>Bot computers</h4><div class="muted">Loading…</div></section>' : ''}
+    ${d.proxmox ? '<section data-af-sec="sys" id="pve-box"><h4>Proxmox</h4><div class="muted">Loading…</div></section>' : ''}
     ${d.usage.byBot?.length ? `<section><h4>Usage by bot · 7 days</h4>${(() => { const total = d.usage.byBot.reduce((a, x) => a + x.cost, 0) || 1;
       return d.usage.byBot.slice(0, 6).map((x) => { const b = bot(x.bot_id); const pc = Math.round((x.cost / total) * 100);
         return `<div class="ubot">${avatar(b, 20)}<span class="un">${esc(b?.name || 'Deleted bot')}</span><span class="muted">${x.runs} runs · ${b ? esc(EFFORTS.find((e) => e[0] === b.effort)?.[1] || b.effort) : ''}</span><b>${pc}%</b></div>
@@ -992,9 +1005,9 @@ function renderMessages() {
     const isBot = S.current.type === 'bot';
     const b = isBot ? bot(S.current.id) : null;
     const th = threadOf(threadKey());
-    if (th && th.kind === 'chat') return `<div class="empty">${avatar(b, 72)}<h2>${esc(th.title || 'New thread')}</h2><p>A fresh conversation with ${esc(b.name)}. It still knows its role and memory${th.project_id ? `, and reads the “${esc(projectOf(th.project_id)?.name || '')}” project instructions` : ''}.</p></div>`;
+    if (th && th.kind === 'chat') return `<div class="empty">${avatar(b, 72)}<h2>${esc(th.title || 'New thread')}</h2><p>A fresh conversation with ${esc(b.name)}. It still knows its role and memory${th.project_id ? `, and reads the “${esc(projectOf(th.project_id)?.name || '')}” project instructions` : ''}.</p>${STARTERS}</div>`;
     if (th) return `<div class="empty">${th.kind === 'inbox' ? TI.inbox : ICON.clock}<h2>${th.kind === 'inbox' ? 'Inbox' : 'Routines'}</h2><p>${th.kind === 'inbox' ? `Requests from other bots to ${esc(b.name)} land here, with its answers.` : `${esc(b.name)}’s scheduled routines post here.`}</p></div>`;
-    return `<div class="empty">${isBot ? avatar(b, 72) : roomAvatar(room(S.current.id), 72)}<h2>${esc(isBot ? b.name : room(S.current.id).name)}</h2><p${isBot && b.role ? ' class="no-i18n"' : ''}>${isBot ? esc(b.role || 'Give this bot a task. It’ll ask before sending, paying, deleting or merging.') : 'Post a goal. The lead bot splits the work, and bots @mention each other to hand things off.'}</p></div>`;
+    return `<div class="empty">${isBot ? avatar(b, 72) : roomAvatar(room(S.current.id), 72)}<h2>${esc(isBot ? b.name : room(S.current.id).name)}</h2><p${isBot && b.role ? ' class="no-i18n"' : ''}>${isBot ? esc(b.role || 'Give this bot a task. It’ll ask before sending, paying, deleting or merging.') : 'Post a goal. The lead bot splits the work, and bots @mention each other to hand things off.'}</p>${STARTERS}</div>`;
   }
   // A quiet divider where each day starts, so timestamps can stay out of the way.
   let day = '';
@@ -1677,8 +1690,8 @@ function connect() {
     if (m.actor === 'you' && !m.comments) return; // our own edit: already reloaded
     reloadDoc(m.blocks || []);
   });
-  es.onerror = () => { fetch('/api/state').then((r) => { if (r.status === 401) location.href = '/login'; }).catch(() => {}); };
-  es.onopen = () => { refreshState(); if (S.current) openThread(threadKey()); };
+  es.onerror = () => { setConnected(false); fetch('/api/state').then((r) => { if (r.status === 401) location.href = '/login'; }).catch(() => {}); };
+  es.onopen = () => { setConnected(true); refreshState(); if (S.current) openThread(threadKey()); };
 }
 // New replies fade in word by word (about a second at most; code blocks fade in whole). Skipped with reduced motion.
 function revealWords(el) {
@@ -3373,12 +3386,19 @@ document.addEventListener('click', async (e) => {
     }
     case 'home': $('#side').classList.remove('open'); return openHome();
     case 'palette': return openPalette();
+    case 'mark-all-read': SIDE_ITEMS.forEach((it) => it.last && markSeen(it.key, it.last.at)); renderSide(); return toast('All chats marked read', { type: 'ok' });
+    case 'pro-settings': $('#side').classList.remove('open'); return settingsPage();
+    case 'pro-usage': return usagePage();
+    case 'pro-status': return statusPage();
+    case 'pro-new': return whatsNew();
+    case 'pro-tour': closeModal(); return setTimeout(() => tour(), 200);
+    case 'pro-search': $('#side').classList.remove('open'); return searchPage();
     case 'home-ask': return homeAsk();
     case 'claude': return claudeModal();
     case 'docs': return docsModal();
     case 'artifacts': return openArtifacts();
     case 'files': return filesModal();
-    case 'user-menu': e.stopPropagation(); return popover(t, [['appearance', 'Appearance', ICON.gear], ['shortcuts', 'Keyboard shortcuts', ICON.keyboard], ['language', 'Language', ICON.globe], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['docs', 'Documents', ICON.book], ['claude', S.data.claude?.mode === 'none' ? 'Connect Claude ⚠' : 'Claude account', ICON.plug], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
+    case 'user-menu': e.stopPropagation(); return popover(t, [['pro-settings', 'Settings', ICON.gear], ['pro-new', `What’s new${document.body.classList.contains('has-new') ? ' •' : ''}`, ICON.book], ['pro-search', 'Search messages', ICON.globe], ['pro-usage', 'Usage history', ICON.clock], ['pro-status', 'System status', ICON.monitor], ['appearance', 'Appearance', ICON.gear], ['shortcuts', 'Keyboard shortcuts', ICON.keyboard], ['language', 'Language', ICON.globe], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['docs', 'Documents', ICON.book], ['claude', S.data.claude?.mode === 'none' ? 'Connect Claude ⚠' : 'Claude account', ICON.plug], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
     case 'new-bot': return botModal();
     case 'edit-bot': return botModal(cur);
     case 'new-room': return roomModal();
@@ -3515,7 +3535,7 @@ document.addEventListener('submit', async (e) => {
   buzz(10);
   ta.value = ''; autosize(ta); $('#slash-hint')?.remove(); sessionDraft.delete(threadKey()); attachments = []; drawAttachments();
   try { await api(`/api/threads/${encodeURIComponent(threadKey())}/messages`, { method: 'POST', body: { text, files } }); kept.forEach((a) => a.preview && URL.revokeObjectURL(a.preview)); }
-  catch (err) { ta.value = text; attachments = kept; drawAttachments(); toast(err.message); }
+  catch (err) { if (err.offline) { queueSend(threadKey(), text, files); return; } ta.value = text; attachments = kept; drawAttachments(); toast(err.message); }
 });
 
 // Paste images/files into the message box, or drop them anywhere on the chat.
@@ -4067,7 +4087,9 @@ const KB = [
   ['split-right', 'Split pane right', 'Ctrl+Alt+Backslash'], ['split-down', 'Split pane down', 'Ctrl+Alt+Minus'],
   ['close', 'Close pane', 'Ctrl+Alt+KeyW'], ['zoom', 'Zoom pane / show all', 'Ctrl+Alt+Enter'],
   ['next', 'Next pane', 'Ctrl+Alt+ArrowRight'], ['prev', 'Previous pane', 'Ctrl+Alt+ArrowLeft'],
-  ['sidebar', 'Show / hide the sidebar', 'Ctrl+KeyB'], ['shortcuts', 'Keyboard shortcuts', 'Ctrl+Slash']
+  ['sidebar', 'Show / hide the sidebar', 'Ctrl+KeyB'], ['shortcuts', 'Keyboard shortcuts', 'Ctrl+Slash'],
+  ['new-thread', 'New thread', 'Ctrl+Alt+KeyN'], ['next-chat', 'Next chat', 'Alt+ArrowDown'], ['prev-chat', 'Previous chat', 'Alt+ArrowUp'],
+  ['settings', 'Settings', 'Ctrl+Comma'], ['search', 'Search messages', 'Ctrl+Shift+KeyF']
 ];
 const kbMine = () => { try { return JSON.parse(localStorage.keybinds || '{}'); } catch { return {}; } };
 function kbGet(act) { const m = kbMine(); return act in m ? m[act] : KB.find((k) => k[0] === act)?.[2] || ''; }
@@ -4085,6 +4107,14 @@ document.addEventListener('keydown', (e) => {
   if (hit[0] === 'sidebar' && e.target.closest?.('[contenteditable="true"]')) return; // Ctrl+B is bold in the editor
   e.preventDefault(); e.stopPropagation();
   if (hit[0] === 'shortcuts') return EMBED ? paneCmd('shortcuts') : shortcutsModal();
+  if (hit[0] === 'settings') return settingsPage();
+  if (hit[0] === 'search') return searchPage();
+  if (hit[0] === 'new-thread') return $('[data-act="new-thread"]')?.click();
+  if (hit[0] === 'next-chat' || hit[0] === 'prev-chat') {
+    const list = [...document.querySelectorAll('#side .side-item[data-open]')]; if (!list.length) return;
+    const i = list.findIndex((x) => x.classList.contains('active'));
+    const n = list[(i + (hit[0] === 'next-chat' ? 1 : list.length - 1)) % list.length]; n.click(); n.scrollIntoView({ block: 'nearest' }); return;
+  }
   if (hit[0] === 'sidebar') return EMBED ? paneCmd('sidebar') : (innerWidth > 760 && setSideCollapsed(!document.body.classList.contains('side-collapsed')));
   paneCmd(hit[0]);
 }, true);
@@ -4241,3 +4271,12 @@ document.addEventListener('keydown', (e) => {
   const k = e.key === '`' ? 'terminal' : e.shiftKey && e.key.toLowerCase() === 'b' ? 'preview' : null;
   if (k) { e.preventDefault(); toggleBotTile(k); }
 });
+
+// Starter prompts in an empty chat fill the message box.
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-starter]'); if (!b) return; const ta = $('#msg'); if (ta) { ta.value = b.dataset.starter; ta.focus(); autosize(ta); } });
+// ? opens the shortcuts sheet (when not typing).
+document.addEventListener('keydown', (e) => { if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && !e.target.isContentEditable) { e.preventDefault(); shortcutsModal(); } });
+// Activity panel filter (remembered per device).
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-af]'); if (!b) return; localStorage.asideF = b.dataset.af; applyAsideFilter(); });
+function applyAsideFilter() { const f = localStorage.asideF || 'all'; document.querySelectorAll('#aside [data-af]').forEach((b) => b.classList.toggle('on', b.dataset.af === f)); document.querySelectorAll('#aside section').forEach((sec) => { sec.hidden = f !== 'all' && sec.dataset.afSec !== f && !(f === 'sys' && !sec.dataset.afSec && /Usage/.test(sec.textContent.slice(0, 40))); }); }
+new MutationObserver(() => applyAsideFilter()).observe(document.getElementById('aside') || document.body, { childList: true });

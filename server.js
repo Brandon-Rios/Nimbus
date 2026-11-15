@@ -23,6 +23,7 @@ import { ensureBrowser, watchBrowser, browserInput, closeBrowser } from './brows
 import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
 import { startScheduler, nextRun, isValidCron } from './scheduler.js';
 import { getPlanUsage, getModels } from './planusage.js';
+import { registerPro } from './pro.js';
 import { pluginCatalog, setPlugin } from './ccplugins.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -447,6 +448,8 @@ route('GET', '/api/models', async (req, res) => json(res, 200, await getModels(c
 
 // Files in a chat: versions, previews (files.js).
 registerFiles(route, { json, body, broadcast, addNote: (thread, text, files) => addMessage(thread, 'system', 'note', text, null, files) });
+
+registerPro(route, { json, q, DATA_DIR });
 
 // Restart the service once no bot is mid-run (a restart kills running bots, including one that asked for it).
 // Needs a sudoers rule letting this user run `systemctl restart nimbus`.
