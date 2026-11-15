@@ -479,7 +479,8 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
           for (const block of ev.message.content) {
             if (block.type === 'tool_use') {
               const step = { id: block.id, tool: block.name, text: summarizeTool(block.name, block.input), state: 'running' };
-              if (ct) Object.assign(step, codeStep(block.name, block.input, cwd));
+              // Code threads keep before/after and commands; other chats keep before/after of edits for the diff view.
+              if (ct || /^(Edit|MultiEdit|Write)$/.test(block.name)) Object.assign(step, codeStep(block.name, block.input, cwd));
               toolsById.set(block.id, step);
               traceBody.steps.push(step);
               updateMessage(traceMsg.id, traceBody);

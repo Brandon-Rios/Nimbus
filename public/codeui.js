@@ -191,26 +191,68 @@ export async function codeProjectModal(p) {
 
 // ---------- the code panel ----------
 const pane = () => document.getElementById('codepane');
+// Workspace: several tools tiled side by side (terminal, changes, code, preview), like an IDE. Saved per device.
+const TILES = [['about', 'Overview'], ['terminal', 'Terminal'], ['changes', 'Changes'], ['files', 'Files'], ['preview', 'Browser'], ['commits', 'Commits'], ['tests', 'Tests']];
+const WSC = { on: true, tiles: (localStorage.codeTiles2 || '').split(',').filter((t) => TILES.some(([k]) => k === t)), max: null };
+// Any other bot chat gets a workspace too: environment, terminal and files in the bot's own folder, the changes it made in this chat, its browser.
+const BTILES = [['env', 'Environment'], ['terminal', 'Terminal'], ['bchanges', 'Changes'], ['browser', 'Browser'], ['files', 'Files']];
+const WSB = { on: true, tiles: (localStorage.botTiles || 'env,terminal,bchanges,browser,files').split(',').filter((t) => BTILES.some(([k]) => k === t)), max: null };
+const ws = () => (CP.bot ? WSB : WSC);
+const WS = new Proxy({}, { get: (o, k) => ws()[k], set: (o, k, v) => { ws()[k] = v; return true; } });
+const saveWS = () => { localStorage.codeTiles2 = WSC.tiles.join(','); localStorage.botTiles = WSB.tiles.join(','); syncBotBtns(); document.body.classList.toggle('code-grid', WS.on); };
+document.body.classList.toggle('code-grid', true);
+const shown = (k) => (WS.on ? WS.tiles.includes(k) && (!WS.max || WS.max === k) : CP.tab === k);
 export function codePaneOpen() { return pane()?.classList.contains('open'); }
 // Called whenever the open chat changes.
 export function codeThreadOpened(key) {
   const c = codeProject(key);
-  if (!c) { if (CP.key) closeCodePane(); return; }
+  document.body.classList.toggle('code-thread', !!c);
+  if (!c) {
+    // The workspace lives in Nimbus Code only.
+    if (CP.key) closeCodePane(); return;
+  }
+  if (CP.bot) { stopBr(); CP.bot = null; CP.key = null; document.body.classList.toggle('code-grid', WSC.on); }
   if (CP.key !== key) { stopTerm(); FV.reset(); CP.key = key; CP.info = null; CP.tab = null; }
-  if (isWide() && localStorage.codePane !== 'closed') openCodePane(); else if (codePaneOpen()) loadCode();
+  if (codePaneOpen()) loadCode(); else if (isWide() && WSC.tiles.length) openCodePane(); else peekInfo(key);
+  syncBotBtns();
 }
+// Header counts (+adds −dels) without opening the panel: one local git call, no Claude.
+async function peekInfo(key) { try { const i = await X.api(`/api/code/${enc(key)}`); if (CP.key === key && !CP.info) { CP.info = i; syncBotBtns(); } } catch {} }
 export function openCodePane() {
   if (!CP.key) return;
   pane().classList.add('open'); document.body.classList.add('code-open');
-  if (isWide()) delete localStorage.codePane;
-  renderPane(); loadCode();
+  document.body.classList.toggle('code-grid', !!WS.on); applyCodeW();
+  if (isWide()) { if (CP.bot) localStorage.botWs = 'open'; else delete localStorage.codePane; }
+  renderPane(); loadCode(); syncBotBtns();
 }
 export function closeCodePane(user = false) {
   stopTerm(); pane()?.classList.remove('open'); document.body.classList.remove('code-open');
-  if (user && isWide()) localStorage.codePane = 'closed';
-  if (!user) CP.key = null;
+  if (CP.bot) { stopBr(); FV.reset(); if (user) localStorage.botWs = 'closed'; }
+  else if (user) { WSC.tiles = []; WSC.max = null; saveWS(); }
+  syncBotBtns();
+  if (!user) { CP.key = null; CP.bot = null; }
 }
-export function toggleCodePane() { codePaneOpen() ? closeCodePane(true) : openCodePane(); }
+// Bot chats: one header button per tool (like the desktop app). Each click adds or removes that tile; several split the panel.
+export function syncBotBtns() {
+  const open = codePaneOpen() && !CP.bot;
+  document.querySelectorAll('[data-bt]').forEach((b) => b.classList.toggle('on', open && WSC.tiles.includes(b.dataset.bt)));
+  const i = CP.info, n = document.querySelector('[data-bt="changes"] .bt-n');
+  if (n) n.innerHTML = i?.changes?.length ? `<span class="add">+${i.changes.reduce((s, c) => s + c.add, 0)}</span> <span class="del">−${i.changes.reduce((s, c) => s + c.del, 0)}</span>` : '';
+}
+export function toggleBotTile(k) {
+  if (CP.bot || !CP.key) return;
+  const open = codePaneOpen();
+  if (open && WSC.tiles.includes(k)) {
+    if (k === 'files' && FV.dirty && !confirm('You have unsaved changes in ' + FV.file + '. Leave them?')) return;
+    WSC.tiles = WSC.tiles.filter((x) => x !== k); if (WSC.max === k) WSC.max = null;
+  } else { if (!open) WSC.tiles = []; WSC.tiles.push(k); WSC.max = null; }
+  saveWS();
+  if (!WSC.tiles.length) return closeCodePane(true);
+  applyCodeW();
+  if (!codePaneOpen()) openCodePane(); else renderPane();
+}
+export function toggleCodePane() {
+  if (!CP.bot && !codePaneOpen() && !WSC.tiles.length) { WSC.tiles = ['about']; saveWS(); } codePaneOpen() ? closeCodePane(true) : openCodePane(); }
 async function startPreviewNow() {
   const k = CP.key; if (!k) return;
   try { await X.api(`/api/code/${enc(k)}/preview`, { method: 'POST', body: {} }); setTimeout(() => { const f = pane()?.querySelector('.cp-frame'); if (f) f.src = f.src; }, 1500); } catch (e) { X.toast(e.message); }
@@ -219,28 +261,30 @@ async function startPreviewNow() {
 export function onCodeChanged(thread, file) {
   if (thread !== CP.key || !codePaneOpen()) return;
   // Live reload: the preview refreshes after the bot (or you) change a file. Dev servers with hot reload handle it themselves.
-  if (file && CP.tab === 'preview' && CP.info?.preview.running && !/\b(vite|next|dev|nuxt|astro|--reload|--debug)\b/.test(CP.info.preview.cmd)) { clearTimeout(CP.pvT); CP.pvT = setTimeout(() => { const f = pane()?.querySelector('.cp-frame'); if (f) f.src = f.src; }, 700); }
-  if (CP.tab === 'files') FV.changed(file);
+  if (file && shown('preview') && CP.info?.preview.running && !/\b(vite|next|dev|nuxt|astro|--reload|--debug)\b/.test(CP.info.preview.cmd)) { clearTimeout(CP.pvT); CP.pvT = setTimeout(() => { const f = pane()?.querySelector('.cp-frame'); if (f) f.src = f.src; }, 700); }
+  if (shown('files')) FV.changed(file);
   clearTimeout(CP.timer); CP.timer = setTimeout(loadCode, 300);
 }
 async function loadCode() {
   const key = CP.key; if (!key) return;
+  if (CP.bot) { CP.info = { bot: true }; return renderPane(); }
   if (!CP.gh || CP.gh.key !== key) { CP.gh = { key }; X.api(`/api/code/${enc(key)}/github`).then((g) => { if (CP.key === key) { CP.gh = { key, ...g }; renderPane(); } }).catch((e) => { if (CP.key === key) { CP.gh = { key, error: e.message }; renderPane(); } }); }
-  try { const i = await X.api(`/api/code/${enc(key)}`); if (key === CP.key) { CP.info = i; renderPane(); } }
+  try { const i = await X.api(`/api/code/${enc(key)}`); if (key === CP.key) { CP.info = i; renderPane(); syncBotBtns(); } }
   catch (e) { if (key === CP.key) { CP.info = { error: e.message }; renderPane(); } }
 }
 
 function renderPane() {
   const el = pane(); if (!el) return;
   const i = CP.info;
+  if (CP.bot && i) return renderBotPane(el);
   if (!i) { el.innerHTML = `<div class="cp-head"><b>Loading…</b><button class="icon-btn" data-cp="close" aria-label="Close">${X.ICON.close}</button></div>`; return; }
   if (i.error) { el.innerHTML = `<div class="cp-head"><b>Code</b><button class="icon-btn" data-cp="close" aria-label="Close">${X.ICON.close}</button></div><p class="muted">${X.esc(i.error)}</p>`; return; }
-  const filesNode = CP.tab === 'files' ? el.querySelector('.cp-files-view') : null;
-  const keepTerm = CP.tab === 'terminal' && CP.term && el.querySelector('.cp-term');
+  const filesNode = shown('files') ? el.querySelector('.cp-files-view') : null;
+  const keepTerm = shown('terminal') && CP.term && el.querySelector('.cp-term');
   const termNode = keepTerm ? el.querySelector('.cp-term') : null;
   const adds = i.changes.reduce((s, c) => s + c.add, 0), dels = i.changes.reduce((s, c) => s + c.del, 0);
   if (!CP.tab) CP.tab = i.changes.length ? 'changes' : 'about';
-  const tabs = [['about', 'About'], ['files', 'Code'], ['changes', `Changes${i.changes.length ? ` <i>${i.changes.length}</i>` : ''}`], ['commits', 'Commits'], ['tests', `Tests${i.test.last && !i.test.last.running ? (i.test.last.ok ? ' <i class="ok">✓</i>' : ' <i class="bad">✗</i>') : ''}`], ['preview', `Preview${i.preview.running ? ' <i class="ok">●</i>' : ''}`], ['terminal', 'Terminal']];
+  const tabs = [['about', 'About'], ['files', 'Files'], ['changes', `Changes${i.changes.length ? ` <i>${i.changes.length}</i>` : ''}`], ['commits', 'Commits'], ['tests', `Tests${i.test.last && !i.test.last.running ? (i.test.last.ok ? ' <i class="ok">✓</i>' : ' <i class="bad">✗</i>') : ''}`], ['preview', `Browser${i.preview.running ? ' <i class="ok">●</i>' : ''}`], ['terminal', 'Terminal']];
   el.innerHTML = `
     <div class="cp-head"><button class="icon-btn cp-back" data-cp="close" aria-label="Back to chat">${X.ICON.chevron}</button>${CODE_ICON}<b title="${X.esc(i.project.path)}">${X.esc(i.project.name)}</b>
       ${i.webUrl ? `<a class="cp-link" href="${X.esc(i.webUrl)}" target="_blank" rel="noopener" title="Open on GitHub">GitHub ↗</a>` : ''}
@@ -254,10 +298,11 @@ function renderPane() {
       ${i.remote ? `<button class="btn small" data-cp="push">Push</button>` : ''}
       ${i.webUrl && i.ownBranch ? `<a class="btn small" href="${X.esc(i.webUrl)}/compare/${enc(i.base)}...${enc(i.branch)}?expand=1" target="_blank" rel="noopener">Open PR ↗</a>` : ''}
     </div>
-    <div class="cp-tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" class="${CP.tab === k ? 'on' : ''}" data-cptab="${k}">${l}</button>`).join('')}</div>
-    <div class="cp-body">${tabBody(i)}</div>`;
-  if (CP.tab === 'files') { if (filesNode) el.querySelector('.cp-files-view').replaceWith(filesNode); else FV.mount(el.querySelector('.cp-files-view')); }
-  if (CP.tab === 'terminal') { if (termNode) el.querySelector('.cp-term').replaceWith(termNode); else startTerm(); }
+    ${WS.on ? gridHtml(i, tabs) : `<div class="cp-tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" class="${CP.tab === k ? 'on' : ''}" data-cptab="${k}">${l}</button>`).join('')}</div>
+    <div class="cp-body">${tabBody(i)}</div>`}`;
+  if (shown('files')) { if (filesNode) el.querySelector('.cp-files-view').replaceWith(filesNode); else FV.mount(el.querySelector('.cp-files-view')); }
+  else FV.reset();
+  if (shown('terminal')) { if (termNode) el.querySelector('.cp-term').replaceWith(termNode); else startTerm(); } else if (CP.term) stopTerm();
 }
 // About box, like the right side of a GitHub repo page. GitHub numbers when the repo is linked, local ones otherwise.
 const num = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n ?? 0));
@@ -299,19 +344,80 @@ function threadName(key) { const t = X.threadOf(key); return t ? (t.title || 'Ne
 function since(at) { const s = Math.max(0, Math.round(Date.now() / 1000 - at)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`; }
 setInterval(() => document.querySelectorAll('#codepane [data-since]').forEach((n) => { if (n.dataset.since) n.textContent = since(Number(n.dataset.since)); }), 1000);
 
-function tabBody(i) {
-  if (CP.tab === 'about') return aboutHtml(i);
-  if (CP.tab === 'files') return '<div class="cp-files-view"></div>';
-  if (CP.tab === 'changes') {
+// ---------- workspace for regular bot chats ----------
+function renderBotPane(el) {
+  const b = X.bot(CP.bot);
+  const keep = {};
+  for (const [k, sel] of [['files', '.cp-files-view'], ['terminal', '.cp-term'], ['browser', '.ws-br'], ['env', '.ws-env']]) if (shown(k) && el.querySelector(sel)) keep[k] = el.querySelector(sel);
+  el.innerHTML = `<div class="cp-head"><button class="icon-btn cp-back" data-cp="close" aria-label="Back to chat">${X.ICON.chevron}</button>${b ? X.avatar(b, 20) : ''}<b>${X.esc(b?.name || 'Bot')} · Workspace</b>
+      <button class="icon-btn" data-cp="refresh" title="Refresh" aria-label="Refresh">↻</button><button class="icon-btn cp-x" data-cp="close" aria-label="Close">${X.ICON.close}</button></div>
+    ${gridHtml(CP.info, [])}`;
+  const put = (k, sel, start) => { if (!shown(k)) return; if (keep[k]) el.querySelector(sel)?.replaceWith(keep[k]); else start(); };
+  put('files', '.cp-files-view', () => FV.mount(el.querySelector('.cp-files-view')));
+  if (!shown('files')) FV.reset();
+  put('terminal', '.cp-term', () => startTerm());
+  if (!shown('terminal') && CP.term) stopTerm();
+  put('browser', '.ws-br', () => X.mountBrowser(CP.bot, el.querySelector('.ws-br')));
+  if (!shown('browser')) stopBr();
+  put('env', '.ws-env', () => loadEnv());
+}
+function stopBr() { if (X.browserBot?.() != null && !document.querySelector('#docpane.open .br-screen')) X.stopBrowserView(); }
+async function loadEnv() {
+  const box = pane()?.querySelector('.ws-env'), key = CP.key; if (!box) return;
+  const html = await X.botEnvHtml(CP.bot, key).catch((e) => `<p class="muted">${X.esc(e.message)}</p>`);
+  // Outputs: every file shared in this chat.
+  const files = X.S.messages.flatMap((m) => { try { return JSON.parse(m.files || '[]'); } catch { return []; } });
+  const out = files.length ? files.slice(-30).reverse().map((f) => `<a class="ws-out" href="/api/files/${f.id}/${encodeURIComponent(f.name)}" data-view="${f.id}" data-doc="${f.doc || ''}">${X.ICON.file}<span>${X.esc(f.name)}</span></a>`).join('') : '<p class="muted small">Nothing yet.</p>';
+  if (CP.key === key && box.isConnected) box.innerHTML = html + `<h4 class="ws-h">Outputs</h4>${out}`;
+}
+// Files the bot edited in this chat (from its work steps), newest first, each with its before/after.
+function bchangesHtml() {
+  const by = new Map();
+  for (const m of X.S.messages) {
+    if (m.kind !== 'trace') continue;
+    let t; try { t = JSON.parse(m.body); } catch { continue; }
+    for (const s of t.steps || []) if (s.diff?.length && s.file) { const e = by.get(s.file) || { file: s.file, diffs: [], at: 0 }; e.diffs.push(...s.diff); e.at = m.id; by.set(s.file, e); }
+  }
+  const list = [...by.values()].sort((x, y) => y.at - x.at);
+  if (!list.length) return '<p class="muted cp-empty">No file changes in this chat yet.</p>';
+  const n = (s) => (s ? s.split('\n').length : 0);
+  return `<div class="ws-chg">${list.map((e) => `<details><summary><span class="fn mono">${X.esc(e.file)}</span><span class="add">+${e.diffs.reduce((a, d) => a + n(d.new), 0)}</span><span class="del">−${e.diffs.reduce((a, d) => a + n(d.old), 0)}</span></summary>
+    <div class="mini-diff mono">${e.diffs.slice(-6).map((d) => [...(d.old ? d.old.split('\n').slice(0, 60).map((l) => `<div class="d">−${X.esc(l)}</div>`) : []), ...d.new.split('\n').slice(0, 60).map((l) => `<div class="a">+${X.esc(l)}</div>`)].join('') + '<div class="sep"></div>').join('')}</div></details>`).join('')}</div>`;
+}
+// Called when this chat's messages change (a work step finished, a file was shared).
+export function botWorkspaceUpdate() {
+  if (!CP.bot || !codePaneOpen()) return;
+  const t = pane().querySelector('[data-tile="bchanges"] .cp-body'); if (t) { const open = [...t.querySelectorAll('details[open] .fn')].map((x) => x.textContent); t.innerHTML = bchangesHtml(); t.querySelectorAll('details').forEach((d) => { if (open.includes(d.querySelector('.fn').textContent)) d.open = true; }); }
+  clearTimeout(CP.envT); CP.envT = setTimeout(loadEnv, 1500);
+}
+
+const GRID_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>';
+function gridHtml(i, tabs) {
+  const ALL = CP.bot ? BTILES : TILES;
+  const label = (k) => tabs.find(([t]) => t === k)?.[1] || ALL.find(([t]) => t === k)?.[1] || k;
+  const hidden = ALL.filter(([k]) => !WS.tiles.includes(k));
+  const list = WS.max ? [WS.max] : WS.tiles;
+  return `<div class="ws-bar">${false && hidden.length ? `<span class="muted">Add:</span>${hidden.map(([k, l]) => `<button class="ws-add" data-ws-add="${k}">+ ${l}</button>`).join('')}` : ''}</div>
+    <div class="ws-grid n${list.length} ${list[0] === 'env' && list.length > 1 ? 'env-first' : ''}" ${list[0] === 'env' && list.length > 1 ? `style="grid-template-rows:repeat(${Math.ceil((list.length - 1) / 2)},minmax(0,1fr));--env-rows:${Math.ceil((list.length - 1) / 2)}"` : ''}>${list.map((k) => `<section class="ws-tile" data-tile="${k}"><div class="ws-head"><b>${label(k)}</b>
+      <button class="icon-btn" data-ws-max="${k}" title="${WS.max ? 'Restore' : 'Maximize'}">${WS.max ? '⤡' : '⤢'}</button><button class="icon-btn" data-ws-close="${k}" title="Close">${X.ICON.close}</button></div>
+      <div class="cp-body">${tabBody(i, k)}</div></section>`).join('') || '<p class="muted cp-empty">Add a tool above.</p>'}</div>`;
+}
+function tabBody(i, tab = CP.tab) {
+  if (tab === 'about') return aboutHtml(i);
+  if (tab === 'env') return '<div class="ws-env"><p class="muted">Loading…</p></div>';
+  if (tab === 'bchanges') return bchangesHtml();
+  if (tab === 'browser') return '<div class="ws-br"></div>';
+  if (tab === 'files') return '<div class="cp-files-view"></div>';
+  if (tab === 'changes') {
     if (!i.changes.length) return '<p class="muted cp-empty">No uncommitted changes.</p>';
     return `<div class="cp-files">${i.changes.map((c) => `<button class="cp-file" data-cp-file="${X.esc(c.file)}"><span class="st ${c.state}">${{ new: 'A', deleted: 'D', renamed: 'R', changed: 'M' }[c.state]}</span><span class="fn mono">${X.esc(c.file)}</span><span class="add">+${c.add}</span><span class="del">−${c.del}</span></button>`).join('')}</div>
       <div class="cp-commit"><input id="cp-msg" placeholder="Commit message (blank = suggested)"><button class="btn primary small" data-cp="commit">Commit</button></div>`;
   }
-  if (CP.tab === 'commits') {
+  if (tab === 'commits') {
     if (!i.commits.length) return '<p class="muted cp-empty">No commits yet.</p>';
     return `<div class="cp-commits">${i.commits.map((c) => `<button class="cp-cm" data-cp-commit="${c.sha}"><span class="mono sha">${c.short}</span><span class="subj">${X.esc(c.subject)}</span><small>${X.esc(c.author)} · ${X.stamp(c.at)}</small></button>`).join('')}</div>`;
   }
-  if (CP.tab === 'tests') {
+  if (tab === 'tests') {
     const l = i.test.last;
     if (!i.test.cmd) return '<p class="muted cp-empty">No tests found. Set a test command in the project settings (⋯ next to the project).</p>';
     return `<div class="cp-row"><code class="mono">${X.esc(i.test.cmd)}</code><button class="btn primary small" data-cp="tests" ${l?.running ? 'disabled' : ''}>${l?.running ? 'Running…' : 'Run tests'}</button></div>
@@ -319,7 +425,7 @@ function tabBody(i) {
         ${l.ok ? '' : '<button class="btn small" data-cp="send-fail">Ask the bot to fix it</button>'}</div><pre class="cp-out">${X.esc(l.out.slice(-20000))}</pre>` : ''}
       <p class="hint">Runs here on the server, no Claude usage.</p>`;
   }
-  if (CP.tab === 'preview') {
+  if (tab === 'preview') {
     const pv = i.preview;
     if (!pv.running) {
       if (!pv.cmd) return `<p class="muted">Couldn’t tell how to run this project. Set a preview command in project settings, or let the bot set it up.</p><div class="cp-row"><button class="btn small" data-cp="preview-ask">Ask the bot to set up a preview</button><button class="btn small" data-cp="preview-settings">Project settings</button></div>`;
@@ -331,8 +437,30 @@ function tabBody(i) {
     return `<p class="muted small cp-why">Running ${X.esc(pv.why || 'the app')} · reloads when files change</p><div class="cp-row"><code class="mono" title="${X.esc(pv.cmd)}">${X.esc(pv.cmd)}</code><button class="btn small" data-cp="preview-reload">Reload</button><a class="btn small" href="${url}" target="_blank" rel="noopener">Open ↗</a><button class="btn small" data-cp="preview-stop">Stop</button></div>
       <iframe class="cp-frame" src="${url}" title="App preview"></iframe><details class="cp-log"><summary>Output</summary><pre class="cp-out">${X.esc(pv.out)}</pre></details>`;
   }
-  if (CP.tab === 'terminal') return '<div class="cp-term"></div><p class="hint">A shell in this task’s folder, running as the Nimbus user.</p>';
+  if (tab === 'terminal') return '<div class="cp-term"></div><p class="hint">A shell in this task’s folder, running as the Nimbus user.</p>';
   return '';
+}
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-ws-add], [data-ws-max], [data-ws-close]'); if (!t) return;
+  const k = t.dataset.wsAdd || t.dataset.wsMax || t.dataset.wsClose;
+  if (k === 'files' && !t.dataset.wsAdd && t.dataset.wsClose && FV.dirty && !confirm('You have unsaved changes in ' + FV.file + '. Leave them?')) return;
+  if (t.dataset.wsAdd) WS.tiles.push(k);
+  if (t.dataset.wsClose) { WS.tiles = WS.tiles.filter((x) => x !== k); if (WS.max === k) WS.max = null; }
+  if (t.dataset.wsMax) WS.max = WS.max ? null : k;
+  saveWS(); if (!WS.tiles.length && !CP.bot) closeCodePane(true); else renderPane();
+});
+
+// Run a command from chat in this task's terminal (the ▷ on shell code blocks in Nimbus Code chats).
+export async function runInTerminal(cmd) {
+  if (!CP.key) return;
+  if (WS.on) { if (!WS.tiles.includes('terminal')) WS.tiles.unshift('terminal'); if (WS.max && WS.max !== 'terminal') WS.max = null; saveWS(); }
+  else if (CP.tab !== 'terminal') { if (CP.tab === 'files') FV.reset(); CP.tab = 'terminal'; }
+  if (!codePaneOpen()) openCodePane(); else renderPane();
+  for (let n = 0; n < 40 && !CP.term; n++) await new Promise((r) => setTimeout(r, 100));
+  await new Promise((r) => setTimeout(r, 400)); // let the shell print its prompt
+  await X.api(`/api/code/${enc(CP.key)}/term`, { method: 'POST', body: { data: cmd.replace(/\n+$/, '') + '\r' } }).catch((err) => X.toast(err.message));
+  CP.term?.term.focus();
 }
 
 // ---------- terminal ----------
@@ -408,8 +536,13 @@ export function renderChanges(m) {
 // Edits show their diff open as they happen; ones you fold stay folded.
 const shut = new Set();
 document.addEventListener('toggle', (e) => { const d = e.target; if (d.classList?.contains('live-diff') && d.dataset.sid) d.open ? shut.delete(d.dataset.sid) : shut.add(d.dataset.sid); }, true);
-export function codeStepHtml(s, mark) {
+export function codeStepHtml(s, mark, closed = false, say = '') {
   if (s.diff?.length) {
+    if (closed) {
+      const lines = s.diff.flatMap((d) => [...(d.old ? d.old.split('\n').slice(0, 40).map((l) => `<div class="d">−${X.esc(l)}</div>`) : []), ...d.new.split('\n').slice(0, 40).map((l) => `<div class="a">+${X.esc(l)}</div>`), '<div class="sep"></div>']);
+      const add = s.diff.reduce((n, d) => n + (d.new ? d.new.split('\n').length : 0), 0), del = s.diff.reduce((n, d) => n + (d.old ? d.old.split('\n').length : 0), 0);
+      return `<details class="step cstep"><summary><span class="mark ${s.state}">${mark}</span><span class="step-say">${X.esc(say || s.text)}</span><span class="add">+${add}</span>${del ? `<span class="del">−${del}</span>` : ''}</summary><div class="mini-diff mono">${lines.join('')}</div></details>`;
+    }
     const lines = s.diff.flatMap((d) => [...(d.old ? d.old.split('\n').map((l) => `<div class="d">−${X.esc(l)}</div>`) : []), ...d.new.split('\n').slice(0, 80).map((l) => `<div class="a">+${X.esc(l)}</div>`), '<div class="sep"></div>']);
     const add = s.diff.reduce((n, d) => n + (d.new ? d.new.split('\n').length : 0), 0), del = s.diff.reduce((n, d) => n + (d.old ? d.old.split('\n').length : 0), 0);
     return `<details class="step cstep live-diff" data-sid="${X.esc(s.id || '')}" ${shut.has(s.id) ? '' : 'open'}><summary><span class="mark ${s.state}">${mark}</span><span>${X.esc(s.text)}</span><span class="add">+${add}</span>${del ? `<span class="del">−${del}</span>` : ''}</summary><div class="mini-diff mono">${lines.join('')}</div></details>`;
@@ -500,15 +633,18 @@ document.addEventListener('change', (e) => { if (e.target.matches?.('[data-fv-fo
 document.addEventListener('input', (e) => { if (e.target.classList?.contains('fv-q')) { FV.q = e.target.value; const tr = FV.el?.querySelector('.fv-tree'); if (tr) tr.innerHTML = FV.tree(); } });
 // Drag the panel's left edge to make it narrower or wider (remembered per device; double-click resets).
 const setCodeW = (w) => { if (w) document.body.style.setProperty('--code-w', w + 'px'); else document.body.style.removeProperty('--code-w'); FV.ed?.view.requestMeasure(); };
-setCodeW(Number(localStorage.codeW) || 0);
+// Tabs and Workspace each remember their own width; Workspace starts at about 60% of the window.
+const wKey = () => 'codeW2';
+const applyCodeW = () => setCodeW(Number(localStorage[wKey()]) || (window.innerWidth >= 1100 ? Math.round(Math.min(window.innerWidth * 0.45, [460, 460, 640, 760][Math.min(WS.tiles?.length || 1, 3)])) : 0));
+applyCodeW();
 document.addEventListener('pointerdown', (e) => {
   if (e.target.id !== 'code-resize') return;
   e.preventDefault(); document.body.classList.add('code-dragging');
-  const move = (ev) => { const w = Math.round(Math.max(320, Math.min(window.innerWidth - 420, window.innerWidth - ev.clientX))); setCodeW(w); localStorage.codeW = w; };
+  const move = (ev) => { const w = Math.round(Math.max(320, Math.min(window.innerWidth - 420, window.innerWidth - ev.clientX))); setCodeW(w); localStorage[wKey()] = w; };
   const up = () => { document.body.classList.remove('code-dragging'); removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
   addEventListener('pointermove', move); addEventListener('pointerup', up);
 });
-document.addEventListener('dblclick', (e) => { if (e.target.id === 'code-resize') { delete localStorage.codeW; setCodeW(0); } });
+document.addEventListener('dblclick', (e) => { if (e.target.id === 'code-resize') { delete localStorage[wKey()]; applyCodeW(); } });
 
 // ---------- clicks ----------
 document.addEventListener('click', async (e) => {
@@ -538,6 +674,7 @@ document.addEventListener('click', async (e) => {
     if (t.dataset.ccCommit !== undefined) { CP.tab = 'changes'; if (!codePaneOpen()) openCodePane(); else renderPane(); setTimeout(() => document.getElementById('cp-msg')?.focus(), 400); return; }
     if (t.dataset.ccTests !== undefined) { CP.tab = 'tests'; if (!codePaneOpen()) openCodePane(); await X.api(`/api/code/${enc(key)}/tests`, { method: 'POST', body: {} }); return loadCode(); }
     const a = t.dataset.cp;
+    if (a === 'grid') { if (WS.on && FV.dirty && !confirm('You have unsaved changes in ' + FV.file + '. Leave them?')) return; WS.on = !WS.on; WS.max = null; saveWS(); applyCodeW(); stopTerm(); FV.reset(); return renderPane(); }
     if (a === 'close') return closeCodePane(true);
     if (a === 'refresh') { CP.gh = null; return loadCode(); }
     if (a === 'link-gh') return linkGithub();

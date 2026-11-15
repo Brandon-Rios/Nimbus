@@ -11,6 +11,7 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import { db, q } from './db.js';
 import { broadcast } from './events.js';
 import { redact } from './redact.js';
+import { botDir } from './db.js';
 
 export const CODE_ROOT = path.resolve(process.env.NIMBUS_CODE_DIR || path.join(os.homedir(), 'code'));
 const BRANCHES = path.join(CODE_ROOT, '.branches');
@@ -111,6 +112,28 @@ export function threadCode(key) {
   if (!isCode(p)) return null;
   const cwd = t.worktree && fs.existsSync(t.worktree) ? t.worktree : repoPath(p);
   return { t, p, cwd, repo: repoPath(p) };
+}
+
+// The folder the workspace panel works in: the repo for code threads, the bot's own folder for any other chat.
+export function workDir(key) {
+  const c = threadCode(key); if (c) return { cwd: c.cwd, git: true };
+  let id = Number((/^bot:(\d+)$/.exec(String(key)) || [])[1]);
+  const t = /^t:(\d+)$/.exec(String(key)); if (t) id = q('SELECT bot_id FROM threads WHERE id=?').get(Number(t[1]))?.bot_id;
+  if (!id || !q('SELECT id FROM bots WHERE id=?').get(id)) throw Object.assign(new Error('No workspace for this chat'), { status: 404 });
+  return { cwd: botDir(id), git: fs.existsSync(path.join(botDir(id), '.git')) };
+}
+// Files in a folder that isn't a git repo (a bot's folder): skips node_modules, .git and other heavy folders.
+function walk(root, max = 5000) {
+  const out = [], skip = /^(node_modules|\.git|\.cache|\.npm|__pycache__|\.venv|venv|browser-profile)$/;
+  const go = (dir, rel) => {
+    let ents = []; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (out.length >= max) return;
+      if (e.isDirectory()) { if (!skip.test(e.name)) go(path.join(dir, e.name), rel + e.name + '/'); }
+      else if (e.isFile()) out.push(rel + e.name);
+    }
+  };
+  go(root, ''); return out;
 }
 
 // What the bot is told when a conversation starts in a code thread.
@@ -491,7 +514,7 @@ export function stopAll() { for (const k of [...previews.keys()]) stopPreview(k)
 const terms = new Map(); // thread -> { proc, buf, listeners:Set }
 const PTY = path.join(path.dirname(new URL(import.meta.url).pathname), 'bin', 'term-pty.py');
 export function terminal(key) {
-  const c = threadCode(key); if (!c) throw Object.assign(new Error('Not a code thread'), { status: 404 });
+  const c = workDir(key);
   let t = terms.get(key);
   if (t) return t;
   const proc = spawn('/usr/bin/python3', [PTY], { cwd: c.cwd, env: { ...process.env, TERM: 'xterm-256color', PS1: '\\[\\e[36m\\]\\W\\[\\e[0m\\] $ ' }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
@@ -592,12 +615,13 @@ function safePath(cwd, rel) {
   return full;
 }
 export function listFiles(key) {
-  const c = threadCode(key); if (!c) throw Object.assign(new Error('Not a code thread'), { status: 404 });
+  const c = workDir(key);
+  if (!c.git) return { root: c.cwd, files: walk(c.cwd).sort() };
   const files = String(require_ls(c.cwd)).split('\0').filter(Boolean).filter((f) => !/(^|\/)node_modules\//.test(f)).slice(0, 20000).sort();
   return { root: c.cwd, files };
 }
 export function readFile(key, rel) {
-  const c = threadCode(key); if (!c) throw Object.assign(new Error('Not a code thread'), { status: 404 });
+  const c = workDir(key);
   const full = safePath(c.cwd, rel);
   const st = fs.statSync(full);
   if (!st.isFile()) throw Object.assign(new Error('Not a file'), { status: 400 });
@@ -607,7 +631,7 @@ export function readFile(key, rel) {
   return { path: rel, size: st.size, mtime: st.mtimeMs, text: buf.toString('utf8') };
 }
 export function writeFile(key, rel, text, mtime) {
-  const c = threadCode(key); if (!c) throw Object.assign(new Error('Not a code thread'), { status: 404 });
+  const c = workDir(key);
   const full = safePath(c.cwd, rel);
   if (typeof text !== 'string' || text.length > 2_000_000) throw Object.assign(new Error('File too big'), { status: 400 });
   // Someone (usually the bot) saved it after you opened it: don't overwrite their work blindly.

@@ -3,7 +3,8 @@ import { attachAutocorrect } from './autocorrect.js';
 import { THEMES, resolveTheme, applyThemeVars } from './themes.js';
 import { startVoice, voiceMessage } from './voice.js';
 import { LANGS, LANG_NAMES, uiLang, setUiLang, startI18n, setI18nNames } from './i18n.js';
-import { initCode, codeSidebar, codeProject, codeThreadOpened, toggleCodePane, onCodeChanged, renderChanges, codeStepHtml, codeProjectModal, CODE_ICON, CM, setCodeMode, codeModeSide, newCodeThread, codeDraftMain, codeDraftSend, deleteCodeProject } from './codeui.js';
+import { initCode, codeSidebar, codeProject, codeThreadOpened, toggleCodePane, toggleBotTile, syncBotBtns, onCodeChanged, renderChanges, codeStepHtml, codeProjectModal, runInTerminal, botWorkspaceUpdate, CODE_ICON, CM, setCodeMode, codeModeSide, newCodeThread, codeDraftMain, codeDraftSend, deleteCodeProject } from './codeui.js';
+import { highlight, langOf, LANG_NAME } from './hl.js';
 import { startRecording, stopRecording, cancelRecording, isRecording, browserDictation } from './dictation.js';
 const $ = (s, el = document) => el.querySelector(s);
 // Split panes: an extra pane is this same app in a frame (?pane=<id>), showing one chat without the sidebar.
@@ -15,6 +16,7 @@ const BOT_COLORS = ['#f4f6ff', '#c7e3ff', '#d9d1ff', '#ffd3e0', '#ffe6a8', '#c9f
   '#ff6b6b', '#ff9f43', '#feca57', '#a3e635', '#2ed573', '#1dd1a1', '#48dbfb', '#54a0ff', '#5f27cd', '#c56cf0', '#ff7eb3', '#576574', '#f5e6d3', '#8d6e63', '#2d3436', '#ffffff'];
 const svg = (d, w = 18) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 const ICON = {
+  home: svg('<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20h5v-6h4v6h5V9.5"/>'),
   plus: svg('<path d="M12 5v14M5 12h14"/>'),
   send: svg('<path d="M12 19V5M6 11l6-6 6 6"/>'),
   search: svg('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>', 16),
@@ -98,12 +100,18 @@ async function clip(text) {
   return ok;
 }
 function copyText(text) { clip(text).then((ok) => toast(ok ? 'Link copied' : text)); }
-function toast(text) {
+// A short message at the bottom. With { action, onAction } it gets a button (e.g. Undo) and stays a bit longer.
+function toast(text, { action, onAction, ms } = {}) {
   const t = document.createElement('div');
-  t.className = 'toast'; t.textContent = text;
+  t.className = 'toast' + (action ? ' has-act' : ''); t.textContent = text;
+  if (action) {
+    const b = document.createElement('button'); b.textContent = action;
+    b.onclick = () => { onAction?.(); t.classList.add('out'); setTimeout(() => t.remove(), 220); };
+    t.append(b);
+  }
   document.querySelectorAll('.toast').forEach((o) => o.remove()); // newest wins, no pile-up
   document.body.append(t);
-  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 220); }, 2600);
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 220); }, ms || (action ? 5000 : 2600));
 }
 
 // A light tap on phones (Android browsers and the Nimbus app); ignored elsewhere.
@@ -141,7 +149,7 @@ const TI = {
 };
 const sideOpen = JSON.parse(localStorage.sideOpen || '{}'); // bot id / 'p<id>' -> expanded?
 const saveSideOpen = () => { localStorage.sideOpen = JSON.stringify(sideOpen); };
-initCode({ S, api, esc, modal, closeModal, toast, bot, avatar, ICON, TI, BOT_COLORS, threadKey, threadOf, openThread, refreshState, renderSide: () => renderSide(), renderMain: () => renderMain(), stamp, popover, sideOpen });
+initCode({ mountBrowser: (id, el) => openBrowser(id, el), stopBrowserView: () => stopBrowserView(), browserBot: () => BR.bot, botEnvHtml, S, api, esc, modal, closeModal, toast, bot, avatar, ICON, TI, BOT_COLORS, threadKey, threadOf, openThread, refreshState, renderSide: () => renderSide(), renderMain: () => renderMain(), stamp, popover, sideOpen });
 function crumbHtml() {
   const t = threadOf(threadKey()), p = t?.project_id ? projectOf(t.project_id) : null;
   return (p ? `<span class="muted">${esc(p.name)} ›</span> ` : '') + `<span>${esc(threadName(threadKey()))}</span>` + TI.chev;
@@ -181,10 +189,14 @@ function sharedProjects(key) {
     const open = sideOpen['p' + p.id] !== false;
     return `<div class="side-proj top"><button class="side-sub-item proj ${open ? 'open' : ''}" data-proj-toggle="${p.id}">${TI.chev}${ICON.folder}<span class="lbl">${esc(p.name)}</span><span class="mini-avs">${p.members.slice(0, 4).map((id) => bot(id) ? avatar(bot(id), 16) : '').join('')}</span></button><button class="side-more" data-proj-menu="${p.id}" aria-label="Project options">${TI.dots}</button></div>`
       + (open ? `<div class="side-sub shared">${rooms.map((r) => `<button class="side-sub-item ${key === 'room:' + r.id ? 'active' : ''}" data-open="room:${r.id}">${roomAvatar(r, 16)}<span class="lbl">${esc(r.name)}</span></button>`).join('')}
-        ${ts.map((t) => `<button class="side-sub-item ${key === 't:' + t.id ? 'active' : ''}" data-open="t:${t.id}">${bot(t.bot_id) ? avatar(bot(t.bot_id), 16) : ''}<span class="lbl">${esc(t.title || 'New thread')}</span>${S.data.last['t:' + t.id] ? `<span class="time">${stamp(S.data.last['t:' + t.id].at)}</span>` : ''}</button>`).join('')}
+        ${ts.filter((t) => !PENDING_DEL.has(t.id)).map((t) => `<button class="side-sub-item ${key === 't:' + t.id ? 'active' : ''}" data-open="t:${t.id}">${bot(t.bot_id) ? avatar(bot(t.bot_id), 16) : ''}<span class="lbl">${esc(t.title || 'New thread')}</span>${S.data.last['t:' + t.id] ? `<span class="time">${stamp(S.data.last['t:' + t.id].at)}</span>` : ''}</button>`).join('')}
         <div class="side-sub-add"><button data-proj-thread="${p.id}">${ICON.plus}<span>New thread</span></button></div></div>` : '');
   }).join('');
 }
+const BT = [['about', 'Overview: branch, merge, push', '<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 8v8M18 10c0 4-6 3-12 6"/>'], ['terminal', 'Terminal', '<path d="m5 8 4 4-4 4M12 16h7"/>'], ['changes', 'Changes', '<path d="M12 4v10M7 9h10M7 20h10"/>'], ['preview', 'Browser: app preview', '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>'], ['files', 'Files', '<path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/>'], ['tests', 'Tests', '<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/>'], ['commits', 'Commits', '<circle cx="12" cy="12" r="3"/><path d="M3 12h6M15 12h6"/>']];
+const BT_BTNS = `<span class="bt-group">${BT.map(([k, l, d]) => `<button class="icon-btn bt-btn" data-bt="${k}" title="${l}" aria-label="${l}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>${k === 'changes' ? '<small class="bt-n"></small>' : ''}</button>`).join('')}</span>`;
+const WS_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M9 12h12"/></svg>';
+const PENDING_DEL = new Set(); // threads deleted a moment ago, still undoable
 async function newThread(botId, projectId = null) {
   try {
     const { key } = await api('/api/threads', { method: 'POST', body: { botId, projectId } });
@@ -281,7 +293,7 @@ function critter(color, look = {}, legacyGlasses) {
   if (body === 'cat') s += px(2.6, 1.6, 0.8, 0.8, '#f59bb0') + px(10.6, 1.6, 0.8, 0.8, '#f59bb0');
 
   // Face: eyes, cheeks and mouth.
-  const eye = (x) => px(x, 6, 1.3, 1.5, ink) + px(x + 0.4, 6.2, 0.45, 0.45, '#fff');
+  const eye = (x) => px(x, 6, 1.3, 1.5, ink, ' class="eye"') + px(x + 0.4, 6.2, 0.45, 0.45, '#fff', ' class="eye"');
   const closed = (x) => px(x - 0.1, 6.7, 1.5, 0.45, ink);
   const arc = (x) => px(x, 6.4, 0.45, 0.45, ink) + px(x + 0.4, 6, 0.6, 0.45, ink) + px(x + 0.9, 6.4, 0.45, 0.45, ink);
   const cheeks = px(2.4, 7.7, 1.1, 0.6, '#f59bb0') + px(10.5, 7.7, 1.1, 0.6, '#f59bb0');
@@ -405,10 +417,13 @@ function linkify(h) {
 function md(src) {
   const blocks = String(src ?? '').split(/```/);
   return blocks.map((part, i) => {
-    if (i % 2) return `<pre><code>${esc(part.replace(/^\w*\n/, ''))}</code></pre>`;
+    if (i % 2) {
+      const tag = (part.match(/^([\w+#.-]*)\n/) || [, ''])[1], code = part.slice(tag.length).replace(/^\n/, '').replace(/\n$/, ''), lang = langOf(tag, code);
+      return `<div class="codeblk"><div class="cb-head"><span>${esc(LANG_NAME[lang] || tag || 'Code')}</span>${['sh', 'ps'].includes(lang) ? '<button class="cb-copy cb-run" data-run-code title="Run in this task’s terminal">▷ Run</button>' : ''}<button class="cb-copy" data-copy-code title="Copy code">Copy</button></div><pre><code class="hl no-i18n">${highlight(code, lang)}</code></pre></div>`;
+    }
     return part.trim().split(/\n{2,}/).map((para) => {
       let h = esc(para)
-        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/`([^`]+)`/g, (a, c) => `<code${/^[~.\w-]*\/[\w./-]+$|^[\w-]+\.(?:js|mjs|ts|py|sh|json|md|css|html|ya?ml|conf|txt|sql|ps1|cs|java|go|rs)$/.test(c) ? ' class="path" data-copy-path title="Click to copy"' : ''}>${c}</code>`)
         .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
         .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
         .replace(/(^|\s)@([A-Z][\w]*(?: [A-Z][\w]*)?)/g, '$1<strong class="mention">@$2</strong>');
@@ -443,18 +458,21 @@ function renderSide() {
     items.sort((a, b) => (pos.has(a.key) ? pos.get(a.key) : -1) - (pos.has(b.key) ? pos.get(b.key) : -1));
   }
   const pending = d.approvals.length;
+  for (const it of items) if (it.last && isActiveItem(it, key)) markSeen(it.key, it.last.at);
+  SIDE_ITEMS = items;
   $('#side').innerHTML = `
     <div class="side-top">
-      <label class="search">${ICON.search}<input id="side-search" placeholder="Search" value="${esc(sideQuery)}" autocomplete="off"></label>
+      <label class="search">${ICON.search}<input id="side-search" placeholder="Search" title="Search chats and messages · Ctrl+K jumps anywhere" value="${esc(sideQuery)}" autocomplete="off"></label>
       <button class="icon-btn" data-act="new-menu" aria-label="New">${ICON.plus}</button>
       <button class="icon-btn side-collapse" data-act="side-collapse" aria-label="Collapse sidebar" title="Collapse sidebar (${esc(kbLabel(kbGet('sidebar')))})">${ICON.sidebar}</button>
     </div>
     <div class="side-list">
+      ${sideQuery ? '' : `<button class="side-item side-home ${S.home ? 'active' : ''}" data-act="home"><span class="av-wrap"><span class="home-ico">${ICON.home}</span></span><span class="meta"><span class="row1"><span class="name">Home</span>${homeCount() ? `<span class="unread-badge">${homeCount()}</span>` : ''}</span><span class="sub">What your bots are up to</span></span></button>`}
       ${items.length ? sideSections(items).map(([g, list]) => (g ? `<div class="side-group-head" data-group="${g.id}"><span class="side-caret ${g.collapsed ? '' : 'open'}">${TI.chev}</span><span class="g-name">${esc(g.name)}</span><span class="g-count">${list.length}</span><span class="icon-btn g-edit" data-group-edit="${g.id}" role="button" aria-label="Edit group">${ICON.dots || '⋯'}</span></div><div class="side-group-body" ${g.collapsed && !sideQuery ? 'hidden' : ''}>` : '') + list.map((it) => `
-        <button class="side-item ${key === it.key || (it.bot && S.current?.type === 'bot' && S.current.id === it.bot.id && !sideIsOpen(it.bot.id)) ? 'active' : ''}" data-open="${it.key}" data-key="${it.key}">
+        <button class="side-item ${isUnread(it) ? 'unread' : ''} ${key === it.key || (it.bot && S.current?.type === 'bot' && S.current.id === it.bot.id && !sideIsOpen(it.bot.id)) ? 'active' : ''}" data-open="${it.key}" data-key="${it.key}">
           <span class="av-wrap">${it.av}${it.state !== 'idle' ? `<span class="dot ${it.state}"></span>` : ''}</span>
           <span class="meta">
-            <span class="row1"><span class="name">${esc(it.name)}</span><span class="time">${it.last ? stamp(it.last.at) : ''}</span></span>
+            <span class="row1"><span class="name">${esc(it.name)}</span><span class="time">${it.last ? stamp(it.last.at) : ''}</span>${isUnread(it) ? '<i class="unread-dot" aria-label="Unread"></i>' : ''}</span>
             <span class="sub">${esc(it.last ? (it.last.author === 'user' ? 'You: ' : '') + it.last.text : it.fallback || 'Say hi')}</span>
           </span>
           ${it.bot ? `<span class="side-caret ${sideIsOpen(it.bot.id) ? 'open' : ''}" data-expand="${it.bot.id}" role="button" aria-label="Show threads">${TI.chev}</span>` : ''}
@@ -468,7 +486,6 @@ function renderSide() {
       ${pending ? `<button class="foot-item" data-act="panel">${ICON.bell}<span>Approvals</span><span class="badge">${pending}</span></button>` : ''}
       <button class="foot-item" data-act="market">${ICON.grid}<span>Connectors</span></button>
       <button class="foot-item" data-act="cc-plugins">${ICON.plug}<span>Plugins &amp; skills</span></button>
-      <button class="foot-item" data-act="shortcuts" title="Keyboard shortcuts (${esc(kbLabel(kbGet('shortcuts')))})">${ICON.keyboard}<span>Keyboard shortcuts</span></button>
       <button class="foot-item user" data-act="user-menu"><span class="initial">${esc(userName()[0])}</span><span>${esc(userName())}</span></button>
     </div>`;
 }
@@ -841,7 +858,18 @@ async function loadProxmox() {
   try { pveLast = await api('/api/proxmox'); } catch (err) { pveLast = { error: err.message }; }
   drawProxmox(pveLast);
 }
+// Home: every Proxmox CT and VM as a tile with an up/down light. Clicking one opens Proxmox Manager.
+function pveHomeHtml(p) {
+  const pm = S.data.bots.find((b) => /proxmox/i.test(b.name));
+  const g = p?.guests || [], up = g.filter((x) => x.status === 'running').length;
+  const head = `<h3>Proxmox${p && !p.error ? ` <span class="pve-sum ${up < g.length ? 'bad' : ''}">${up} of ${g.length} up</span>` : ''}</h3>`;
+  if (!p) return head + `<div class="muted">${LOADER} Checking…</div>`;
+  if (p.error) return head + `<div class="muted">Couldn’t reach Proxmox: ${esc(p.error)}</div>`;
+  return head + `<div class="pve-grid">${g.map((x) => `<button class="pve-tile ${x.status === 'running' ? 'up' : 'down'}" ${pm ? `data-open="bot:${pm.id}"` : ''} title="${x.type === 'qemu' ? 'VM' : 'CT'} ${x.id} on ${esc(x.node)}: ${esc(x.status)}"><i></i><span><b>${esc(x.name || '')}</b><small>${x.type === 'qemu' ? 'VM' : 'CT'} ${x.id} · ${x.status === 'running' ? 'up' : esc(x.status)}</small></span></button>`).join('')}</div>`;
+}
+setInterval(() => { if (S.home && !S.current && S.data?.proxmox && !document.hidden) loadProxmox(); }, 30000);
 function drawProxmox(p) {
+  const hb = $('#home-pve'); if (hb) hb.innerHTML = pveHomeHtml(p);
   const box = $('#pve-box'); if (!box) return;
   const pc = (a, b) => (b ? Math.round((a / b) * 100) : 0);
   const meter = (label, v) => `<div class="row"><span>${label}</span><span>${v}%</span></div><div class="meter"><div style="width:${v}%"></div></div>`;
@@ -860,9 +888,21 @@ function describeTool(tool, input = {}) {
 }
 
 // ---------- main ----------
+let viewKey = '';
 function renderMain() {
+  requestAnimationFrame(syncBotBtns);
   const main = $('#main');
+  // Switching chats (or to Home) fades the new view in; redraws of the same view don't.
+  const vk = S.current ? threadKey() : S.home ? 'home' : '';
+  if (vk !== viewKey) { viewKey = vk; requestAnimationFrame(() => { main.classList.remove('view-in'); void main.offsetWidth; main.classList.add('view-in'); }); }
   if (CM.draft) { main.innerHTML = codeDraftMain(); attachAutocorrect($('#msg')); autosize($('#msg')); return; }
+  if (!S.current && S.home && !EMBED) {
+    // Live updates redraw Home; keep what you were typing (and which bot) in the quick-ask box.
+    const q = $('#home-q'), keep = q && { v: q.value, f: document.activeElement === q, s: q.selectionStart, bot: $('#home-bot')?.value };
+    main.innerHTML = renderHome(); if (S.data.proxmox) loadProxmox();
+    if (keep) { const n = $('#home-q'); n.value = keep.v; $('#home-bot').value = keep.bot; if (keep.f) { n.focus(); n.setSelectionRange(keep.s, keep.s); } }
+    return;
+  }
   if (!S.current) {
     const none = !S.data.bots.length;
     if (EMBED) { main.innerHTML = `<header class="head"><b class="pane-pick-title">Pick a chat for this pane</b><div class="actions">${paneBtns()}</div></header>
@@ -892,24 +932,18 @@ function renderMain() {
       </button>
       ${isBot ? `<button class="th-crumb" data-act="thread-menu" title="Thread options">${crumbHtml()}</button>` : ''}
       <div class="actions">
-        ${paneBtns()}
+        ${EMBED || leaves().length > 1 ? paneBtns() : ''}
         ${isBot ? `
           <label class="effort" title="Effort: higher is smarter but uses more of your plan">
             <button class="effort-btn" data-act="effort-menu" aria-label="Effort" aria-haspopup="menu">${esc(EFFORTS.find(([v]) => v === b.effort)?.[1] || 'Medium')}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m6 9 6 6 6-6"/></svg></button>
           </label>
-          <button class="icon-btn" data-act="voice" title="Voice chat: talk with ${esc(b.name)} out loud" aria-label="Voice chat">${ICON.voice}</button>
-          <button class="icon-btn" data-act="routines" title="Routines" aria-label="Routines">${ICON.clock}${nRoutines ? `<i class="count">${nRoutines}</i>` : ''}</button>
-          ${b.computer && S.data.computers ? `<button class="icon-btn" data-act="computer" title="${esc(b.name)}’s computer" aria-label="Computer">${ICON.monitor}</button>` : ''}
-          ${b.computer && S.data.computers ? '' : `<button class="icon-btn" data-act="browser" title="Browser: watch and use this bot’s browser" aria-label="Browser">${ICON.globe}</button>`}
-          <button class="icon-btn" data-act="plugins" title="Plugins" aria-label="Plugins">${ICON.plug}${b.plugins.length ? `<i class="count">${b.plugins.length}</i>` : ''}</button>
-          <button class="icon-btn" data-act="memory" title="Memory" aria-label="Memory">${ICON.book}</button>
           <button class="icon-btn" data-act="new-thread" title="New thread" aria-label="New thread">${ICON.compose}</button>
-          ${codeProject(threadKey()) ? `<button class="icon-btn code-btn" data-act="code-pane" title="Code: branch, changes, tests, preview, terminal" aria-label="Code panel">${CODE_ICON}</button>` : ''}
+          ${codeProject(threadKey()) ? BT_BTNS : ''}
+          <button class="icon-btn" data-act="files" title="Files in this chat" aria-label="Files">${ICON.folder}</button>
           <button class="icon-btn" data-act="info" title="Chat details: environment, context, connectors" aria-label="Chat details">${ICON.sidebar}</button>
-          <button class="icon-btn" data-act="edit-bot" title="Settings" aria-label="Settings">${ICON.gear}</button>`
-        : `<button class="icon-btn" data-act="edit-room" title="Settings" aria-label="Settings">${ICON.gear}</button>`}
-        ${isBot ? `<button class="icon-btn" data-act="artifacts" title="Artifacts: everything this bot made" aria-label="Artifacts">${ICON.grid}${artNew[threadKey()] ? `<i class="count hot">${artNew[threadKey()] > 9 ? '9+' : artNew[threadKey()]}</i>` : ''}</button>` : ''}
-        <button class="icon-btn" data-act="files" title="Files in this chat" aria-label="Files">${ICON.folder}</button>
+          <button class="icon-btn" data-act="more-menu" title="More: voice, routines, browser, plugins, memory, artifacts, split, settings" aria-label="More">${ICON.dots}${nRoutines || artNew[threadKey()] ? '<i class="count dot"></i>' : ''}</button>`
+        : `<button class="icon-btn" data-act="files" title="Files in this chat" aria-label="Files">${ICON.folder}</button>
+           <button class="icon-btn" data-act="edit-room" title="Settings" aria-label="Settings">${ICON.gear}</button>`}
         <button class="icon-btn" data-act="panel" title="Activity" aria-label="Activity">${ICON.bell}${pending ? `<i class="count hot">${pending}</i>` : ''}</button>
       </div>
     </header>
@@ -935,7 +969,7 @@ function renderMain() {
         <label class="effort" title="Effort"><button class="effort-btn" data-act="effort-menu" aria-label="Effort" aria-haspopup="menu">${avatar(b, 16)} ${esc(b.name)} · ${esc(EFFORTS.find(([v]) => v === b.effort)?.[1] || 'Medium')}</button></label>
         <button class="icon-btn" data-act="files" title="Files in this chat" aria-label="Files">${ICON.folder}</button>
         <button class="icon-btn" data-act="panel" title="Activity" aria-label="Activity">${ICON.bell}${pending ? `<i class="count hot">${pending}</i>` : ''}</button>
-        <button class="icon-btn code-btn" data-act="code-pane" title="Code panel" aria-label="Code panel">${CODE_ICON}</button></div>`;
+        ${BT_BTNS}</div>`;
     const ta = $('#msg'); if (ta) ta.placeholder = `Ask ${b.name} anything${cm.p.members.length > 1 ? ' · @ a bot to hand it work' : ''}`;
   }
   if (!$('#msg')) { const th = $('#thread'); th.scrollTop = th.scrollHeight; return; }
@@ -953,7 +987,7 @@ const sessionDraft = new Map();
 function autosize(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(200, ta.scrollHeight) + 'px'; }
 
 function renderMessages() {
-  if (S.loadingThread) return '<div class="empty small">Loading…</div>';
+  if (S.loadingThread) return '<div class="skel" aria-label="Loading"><i class="b"></i><i class="u"></i><i class="b w"></i><i class="u s"></i><i class="b"></i></div>';
   if (!S.messages.length) {
     const isBot = S.current.type === 'bot';
     const b = isBot ? bot(S.current.id) : null;
@@ -962,7 +996,35 @@ function renderMessages() {
     if (th) return `<div class="empty">${th.kind === 'inbox' ? TI.inbox : ICON.clock}<h2>${th.kind === 'inbox' ? 'Inbox' : 'Routines'}</h2><p>${th.kind === 'inbox' ? `Requests from other bots to ${esc(b.name)} land here, with its answers.` : `${esc(b.name)}’s scheduled routines post here.`}</p></div>`;
     return `<div class="empty">${isBot ? avatar(b, 72) : roomAvatar(room(S.current.id), 72)}<h2>${esc(isBot ? b.name : room(S.current.id).name)}</h2><p${isBot && b.role ? ' class="no-i18n"' : ''}>${isBot ? esc(b.role || 'Give this bot a task. It’ll ask before sending, paying, deleting or merging.') : 'Post a goal. The lead bot splits the work, and bots @mention each other to hand things off.'}</p></div>`;
   }
-  return S.messages.map((m, i) => renderMessage(m, S.messages[i - 1])).join('');
+  // A quiet divider where each day starts, so timestamps can stay out of the way.
+  let day = '';
+  return pinsHtml() + S.messages.map((m, i) => {
+    const d = m.created_at ? new Date(m.created_at * 1000).toDateString() : day, sep = d !== day && m.created_at ? daySep(m.created_at) : '';
+    day = d; return sep + renderMessage(m, S.messages[i - 1]);
+  }).join('');
+}
+// Pinned replies, per chat, kept on this device. They show as chips at the top; click one to jump to it.
+const pinKey = () => 'pins:' + threadKey();
+const getPins = () => { try { return JSON.parse(localStorage[pinKey()] || '[]'); } catch { return []; } };
+const isPinned = (id) => getPins().includes(id);
+function pinsHtml() {
+  const pins = getPins().map((id) => S.messages.find((m) => m.id === id)).filter(Boolean);
+  if (!pins.length) return '<div class="pins" hidden></div>';
+  return `<div class="pins"><span class="pins-ico">📌</span>${pins.map((m) => `<button class="pin-chip" data-pin-go="${m.id}" title="Jump to this reply">${esc(m.body.replace(/```[\w+#.-]*/g, ' ').replace(/[#*`>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60))}</button>`).join('')}</div>`;
+}
+function togglePin(id) {
+  const p = getPins(), on = !p.includes(id);
+  localStorage[pinKey()] = JSON.stringify(on ? [...p, id] : p.filter((x) => x !== id));
+  $('#thread .pins')?.replaceWith(Object.assign(document.createElement('div'), { innerHTML: pinsHtml() }).firstElementChild);
+  const b = $(`[data-pin="${id}"]`); if (b) b.textContent = on ? 'Unpin' : 'Pin';
+  buzz(6); toast(on ? 'Pinned to the top of this chat' : 'Unpinned');
+}
+const quoteOf = (m) => m.body.trim().split('\n').slice(0, 8).map((l) => '> ' + l.slice(0, 200)).join('\n') + '\n\n';
+function daySep(sec) {
+  const d = new Date(sec * 1000), now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1);
+  const t = d.toDateString() === now.toDateString() ? 'Today' : d.toDateString() === y.toDateString() ? 'Yesterday'
+    : d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) });
+  return `<div class="day-sep"><span>${t}</span></div>`;
 }
 
 // Show the bot's name above its bubble in group chats, when the speaker changes.
@@ -998,6 +1060,11 @@ new MutationObserver(() => {
   }
 }).observe(document.documentElement, { childList: true, subtree: true });
 function fmtSize(n) { return n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
+
+document.addEventListener('click', async (e) => {
+  const c = e.target.closest('#thread code[data-copy-path]'); if (!c) return;
+  buzz(6); toast(await clip(c.textContent) ? 'Copied ' + c.textContent : 'Couldn’t copy');
+});
 
 // ---------- right-click (or long-press) a message: redact ----------
 document.addEventListener('contextmenu', (e) => {
@@ -1371,7 +1438,7 @@ function renderMessage(m, prev) {
   }
   if (m.kind === 'doc') { let d = {}; try { d = JSON.parse(m.body); } catch {} return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<button class="doc-card" data-doc-open="${esc(d.docId || '')}"><span class="dc-ico">📄</span><span><b>${esc(d.title || 'Document')}</b><small>Live document · click to open</small></span><span class="dc-open">Open</span></button></div>`; }
   return `<div class="msg bot ${m.kind === 'error' ? 'error' : ''}" data-mid="${m.id}" title="${clock(m.created_at)}">${speakerLabel(m, prev)}${m.body ? `<div class="bubble md">${md(m.body)}</div>` : ''}${renderFiles(m)}${msgStamp(m.created_at)}
-    <div class="msg-actions"><button data-copy="${m.id}">Copy</button>${m.kind === 'error' ? '<button data-continue="1">Try again</button>' : `<button data-speak="${m.id}">▶ Read aloud</button><button data-continue="1">Continue</button>`}</div></div>`;
+    <div class="msg-actions"><button data-copy="${m.id}">Copy</button>${m.kind === 'error' ? '<button data-continue="1">Try again</button>' : `<button data-quote="${m.id}" title="Quote this in your reply">Quote</button><button data-pin="${m.id}">${isPinned(m.id) ? 'Unpin' : 'Pin'}</button><button data-branch="${m.id}" title="Start a new thread that picks up from this reply">New thread from here</button><button data-speak="${m.id}">▶ Read aloud</button><button data-continue="1">Continue</button>`}</div></div>`;
 }
 
 // While a bot works, the label cycles through cloud-themed phrases. The phrase is picked from the
@@ -1399,6 +1466,51 @@ function traceStats(t) {
   return bits.length ? ' · ' + bits.join(' · ') : '';
 }
 
+
+// Steps read as plain language ("Searched files", "Edited docs.js"); the exact command shows when you click the step.
+const baseName = (p) => String(p || '').replace(/[)"']+$/, '').split('/').filter(Boolean).pop() || p;
+const MCP_SAY = { send_message: 'Sent an email', create_draft: 'Drafted an email', search_threads: 'Searched email', get_thread: 'Read an email thread',
+  get_message: 'Read an email', list_events: 'Checked the calendar', create_event: 'Added a calendar event', update_event: 'Updated a calendar event',
+  delete_event: 'Removed a calendar event', suggest_time: 'Looked for free time', list_calendars: 'Listed calendars' };
+function friendlyStep(st) {
+  const tool = st.tool || String(st.text).split('(')[0], arg = String(st.text).slice(tool.length + 1).replace(/\)…?$/, '');
+  switch (tool) {
+    case 'Read': return `Read ${baseName(arg)}`;
+    case 'Write': return `Wrote ${baseName(arg)}`;
+    case 'Edit': case 'MultiEdit': case 'NotebookEdit': return `Edited ${baseName(arg)}`;
+    case 'Grep': return 'Searched the code';
+    case 'Glob': return 'Looked for files';
+    case 'WebSearch': return `Searched the web${arg ? ': ' + arg.slice(0, 60) : ''}`;
+    case 'WebFetch': { const h = (arg.match(/https?:\/\/([^/\s"]+)/) || [])[1]; return `Opened ${h || 'a web page'}`; }
+    case 'TodoWrite': case 'TaskCreate': case 'TaskUpdate': return 'Updated its to-do list';
+    case 'Task': case 'Agent': return 'Started a helper';
+    case 'ToolSearch': return 'Loaded tools';
+    case 'TaskStop': return 'Stopped a background task';
+    case 'Skill': return `Used a skill${arg ? ': ' + arg.slice(0, 40) : ''}`;
+    case 'Bash': {
+      const c = arg.replace(/^cd [^&;]+(&&|;)\s*/, '').trim(), cPath = (c.match(/\/[\w.\-/]+|\b[\w\-]+\.(js|mjs|py|css|html|md|json|sh|ts|txt|yml|yaml|conf|log)\b/) || [])[0];
+      if (/ask-bot\.mjs/.test(c)) { const who = (c.match(/ask-bot\.mjs"?\s+(?:--no-wait\s+)?"([^"]+)"/) || [])[1]; const n = who && (who.startsWith('#') ? bot(Number(who.slice(1)))?.name : who); return `Asked ${n || 'another bot'}`; }
+      if (/send-file\.mjs/.test(c)) return 'Sent you a file';
+      if (/doc\.mjs/.test(c)) return 'Worked on a live document';
+      if (/thread\.mjs/.test(c)) return 'Organized threads';
+      if (/nimbus\.mjs/.test(c)) return 'Changed Nimbus settings';
+      if (/^git (commit|push|merge|rebase)/.test(c)) return `Git: ${c.split(/\s+/)[1]}`;
+      if (/^git /.test(c)) return 'Checked git history';
+      if (/^(grep|rg|find)\b/.test(c)) return 'Searched files';
+      if (/^(cat|head|tail|less|sed -n|wc|ls|tree|du)\b/.test(c)) return cPath ? `Looked at ${baseName(cPath)}` : 'Looked at files';
+      if (/^(npm|pnpm|yarn) (test|run test)|pytest|node --test/.test(c)) return 'Ran tests';
+      if (/^(npm|pnpm|yarn|pip|apt) /.test(c)) return 'Installed or updated packages';
+      if (/^(curl|wget)\b/.test(c)) { const h = (c.match(/https?:\/\/([^/\s"']+)/) || [])[1]; return `Called ${h || 'a web address'}`; }
+      if (/^ssh\b/.test(c)) { const h = (c.match(/@([\w.-]+)/) || [])[1]; return `Connected to ${h || 'another machine'}`; }
+      if (/^(python3?|node)\b/.test(c)) return 'Ran a script';
+      if (/^(systemctl|service|docker|pct|qm)\b/.test(c)) return 'Managed a service';
+      return 'Ran a command';
+    }
+  }
+  if (tool.startsWith('mcp__')) { const parts = tool.split('__'), act = parts.pop(), srv = parts.pop().replace(/^claude_ai_/, '').replace(/_/g, ' ');
+    return MCP_SAY[act] || `${srv}: ${act.replace(/_/g, ' ')}`; }
+  return st.text;
+}
 function renderTrace(m, prev) {
   const t = JSON.parse(m.body);
   const running = t.status === 'running';
@@ -1413,20 +1525,21 @@ function renderTrace(m, prev) {
   return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<details class="trace ${running ? 'live' : ''} ${waiting ? 'paused' : ''}" ${open ? 'open' : ''} data-started="${t.started}">
     <summary>${running ? LOADER : ICON.chevron}<span>${label}</span><span class="sp"><span data-dur>${dur}</span>${traceStats(t)}</span>${running ? `<button class="stop" data-stop="${m.run_id}">Stop</button>` : ''}</summary>
     <div class="steps">
-      ${t.steps.map((s) => codeStepHtml(s, mark[s.state] ?? '') ?? `<div class="step"><span class="mark ${s.state}">${mark[s.state] ?? ''}</span><span>${esc(s.text)}</span></div>`).join('')}
+      ${t.steps.map((s) => codeStepHtml(s, mark[s.state] ?? '', !codeProject(threadKey())) ?? `<div class="step"><span class="mark ${s.state}">${mark[s.state] ?? ''}</span><span><code class="step-raw no-i18n">${s.tool === 'Bash' ? highlight(s.text, 'sh') : esc(s.text)}</code></span></div>`).join('')}
       ${running && t.lastThought ? `<div class="thought">${esc(t.lastThought)}</div>` : ''}
     </div>
   </details></div>`;
 }
 const openTraces = new Set();
 
+const JUST = new Map(); // approvals decided on this screen in the last few seconds: their card plays the stamp once
 function renderApproval(m, b, prev) {
   const a = JSON.parse(m.body);
   const pending = a.status === 'pending';
   const input = a.tool === 'Bash' ? a.input.command : JSON.stringify(a.input, null, 2);
   const done = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired' }[a.status];
-  return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<div class="approval ${pending ? '' : 'decided'}">
-    <div class="label">${ICON.lock} ${pending ? 'Needs your approval' : done}</div>
+  return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<div class="approval ${pending ? '' : `decided ${a.status}`} ${!pending && JUST.has(a.approvalId) ? 'just' : ''}">
+    <div class="label">${pending ? ICON.lock : `<span class="stamp">${a.status === 'approved' ? '✓' : '✕'}</span>`} ${pending ? 'Needs your approval' : done}</div>
     <div>${esc(describeTool(a.tool, a.input).split(' — ')[0].replace(/^Run: .*/, 'Run a command'))}</div>
     <pre>${esc(input)}</pre>
     ${a.note ? `<div class="muted">Your note: ${esc(a.note)}</div>` : ''}
@@ -1452,7 +1565,7 @@ async function openThread(key) {
   }
   const prev = threadKey();
   if (prev) sessionDraft.set(prev, $('#msg')?.value || '');
-  S.current = { type, id: Number(id), ...(thread ? { thread } : {}) };
+  S.current = { type, id: Number(id), ...(thread ? { thread } : {}) }; S.home = false;
   CM.draft = null; setCodeMode(!!codeProject(key) && !EMBED); if (!CM.on) S.lastPlain = key;
   // The browser pane follows the chat: switching bots shows the new bot's own browser.
   if (BR.bot && !(type === 'bot' && Number(id) === BR.bot)) { if (type === 'bot') openBrowser(Number(id)); else closeDoc(); }
@@ -1490,6 +1603,7 @@ async function loadOlder() {
   } catch (e) { toast(e.message); }
   finally { S.loadingOlder = false; th.classList.remove('loading-older'); }
 }
+document.addEventListener('click', (e) => { const st = e.target.closest('[data-step-raw]'); if (st && !getSelection().toString()) st.classList.toggle('show-raw'); });
 document.addEventListener('scroll', (e) => { if (e.target.id === 'thread' && e.target.scrollTop < 400) loadOlder(); }, true);
 
 let stateSeq = 0;
@@ -1521,8 +1635,9 @@ function connect() {
       if (S.messages.length === 1) inner.innerHTML = '';
       inner.insertAdjacentHTML('beforeend', renderMessage(m, prev));
       inner.lastElementChild?.classList.add('enter');
-      if (m.author !== 'user' && m.kind === 'text') buzz(6);
+      if (m.author !== 'user' && m.kind === 'text') { buzz(6); revealWords(inner.lastElementChild?.querySelector('.bubble')); }
       if (nearBottom || m.author === 'user') th.scrollTop = th.scrollHeight;
+      botWorkspaceUpdate();
     }
     if (m.kind === 'approval' && m.author !== 'user') notify(m);
     soon();
@@ -1537,12 +1652,16 @@ function connect() {
     const i = S.messages.findIndex((x) => x.id === m.id);
     if (i < 0) return;
     S.messages[i] = m;
+    if (m.kind === 'trace') botWorkspaceUpdate();
     if (m.kind === 'trace' && infoBot && m.thread === threadKey() && S.current?.id === infoBot && JSON.parse(m.body || '{}').status !== 'running') setTimeout(loadInfo, 800);
     const el = document.querySelector(`[data-mid="${m.id}"]`);
     if (el) {
       const th = $('#thread');
       const nearBottom = th.scrollHeight - th.scrollTop - th.clientHeight < 200;
+      const before = el.querySelectorAll('.trace .steps > .step');
+      const was = [...before].map((x) => x.querySelector('.mark')?.className), wasLive = !!el.querySelector('.trace.live');
       el.outerHTML = renderMessage(m, S.messages[i - 1]);
+      animateTrace(document.querySelector(`[data-mid="${m.id}"]`), was, wasLive, m);
       if (nearBottom) th.scrollTop = th.scrollHeight;
     }
   });
@@ -1560,6 +1679,36 @@ function connect() {
   });
   es.onerror = () => { fetch('/api/state').then((r) => { if (r.status === 401) location.href = '/login'; }).catch(() => {}); };
   es.onopen = () => { refreshState(); if (S.current) openThread(threadKey()); };
+}
+// New replies fade in word by word (about a second at most; code blocks fade in whole). Skipped with reduced motion.
+function revealWords(el) {
+  if (!el || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: (n) => n.parentElement.closest('pre, .codeblk') || !n.textContent.trim() ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
+  const nodes = []; for (let n; (n = walk.nextNode());) nodes.push(n);
+  const total = nodes.reduce((k, n) => k + n.textContent.split(/\s+/).length, 0), step = Math.min(28, 1100 / Math.max(1, total));
+  let i = 0;
+  for (const n of nodes) {
+    const f = document.createDocumentFragment();
+    for (const part of n.textContent.split(/(\s+)/)) {
+      if (!part || /^\s+$/.test(part) || i > 400) { f.append(part); continue; }
+      const w = document.createElement('span'); w.className = 'w'; w.style.animationDelay = Math.round(i++ * step) + 'ms'; w.textContent = part; f.append(w);
+    }
+    n.replaceWith(f);
+  }
+  el.querySelectorAll('.codeblk').forEach((c) => { c.classList.add('w'); c.style.animationDelay = Math.round(i * step) + 'ms'; });
+}
+// Steps that just finished tick in; when the whole run finishes the bot gives a little hop.
+function animateTrace(el, was, wasLive, m) {
+  if (!el || m.kind !== 'trace') return;
+  el.querySelectorAll('.trace .steps > .step').forEach((st, k) => {
+    const mk = st.querySelector('.mark');
+    if (k >= was.length) st.classList.add('step-new');
+    if (mk && mk.className !== was[k] && /\b(done|error|rejected)\b/.test(mk.className)) mk.classList.add('tick');
+  });
+  if (wasLive && !el.querySelector('.trace.live')) {
+    el.querySelector('.trace')?.classList.add('finished');
+    const av = document.querySelector('.head .avatar'); if (av) { av.classList.remove('hop'); void av.offsetWidth; av.classList.add('hop'); }
+  }
 }
 function updateHeaderBits() {
   const b = S.current?.type === 'bot' ? bot(S.current.id) : null;
@@ -1651,18 +1800,25 @@ async function loadInfo() {
   infoBusy = false;
   if (infoBot !== b.id) return;
   const sec = (k, title, body) => `<details class="info-sec" data-k="${k}" ${keep.includes(k) ? 'open' : ''}><summary>${title}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m6 9 6 6 6-6"/></svg></summary>${body}</details>`;
+  el.querySelector('.info-body').innerHTML = infoSections(r, sec);
+}
+// Environment, context and connectors for a bot (chat details panel and the workspace's Environment tile).
+function infoSections(r, sec) {
   const env = r.env ? `
     <div class="info-line">${ICON.monitor}<span>${esc(r.env.where)}</span></div>
-    <div class="info-line" title="${esc(r.env.folder)}">${ICON.box}<span>${esc(r.env.folder.split(/[\\/]/).slice(-3).join('/'))}</span></div>
+    <div class="info-line" title="${esc(r.env.folder)}">${ICON.folder}<span>${esc(r.env.folder.split(/[\\/]/).slice(-3).join('/'))}</span></div>
     <div class="info-line">${ICON.gear}<span>${esc(r.context?.model || r.env.model || 'Default model')} · ${esc(EFFORTS.find(([v]) => v === r.env.effort)?.[1] || r.env.effort)} effort</span></div>` : '';
   const conn = r.env ? [
     ...(r.plugins || []).map((p) => `<div class="info-line"><span class="pi" style="background:${esc(p.color || '#666')}">${esc(p.icon || p.name[0])}</span><span>${esc(p.name)}</span><em>plugin</em></div>`),
     ...(r.connectors || []).map((c) => `<div class="info-line"><span class="pi" style="background:${esc(c.color || '#666')}">${esc(c.icon || c.name[0])}</span><span>${esc(c.name)}</span><em class="${c.status === 'connected' ? '' : 'bad'}">${c.status === 'connected' ? '' : esc(c.status)}</em></div>`)
   ].join('') || '<div class="muted">No connectors. Add some from Connectors.</div>' : '';
-  el.querySelector('.info-body').innerHTML =
-    (r.env ? sec('env', 'Environment', env) : '') +
+  return (r.env ? sec('env', 'Environment', env) : '') +
     sec('ctx', 'Context', r.context ? contextHtml(r.context) : `<div class="muted">${esc(r.error || 'Not available')}</div>`) +
     (r.env ? sec('conn', 'Connectors', conn + `<button class="btn pill small" data-act="plugins">Manage connectors</button>`) : '');
+}
+async function botEnvHtml(botId, key) {
+  const r = await api(`/api/bots/${botId}/context?thread=${encodeURIComponent(key)}`);
+  return `<div class="info-body ws-info">${infoSections(r, (k, title, body) => `<h4 class="ws-h">${title}</h4>${body}`)}</div>`;
 }
 function contextHtml(r) {
   const deferred = (c) => /deferred/i.test(c.name);
@@ -2436,6 +2592,8 @@ function rejectModal(id) {
   });
 }
 async function decide(id, decision, extra = {}) {
+  JUST.set(id, decision); setTimeout(() => JUST.delete(id), 4000);
+  document.querySelector(`[data-approve="${id}"]`)?.closest('.approval')?.classList.add('going', decision);
   try { await api(`/api/approvals/${id}`, { method: 'POST', body: { decision, ...extra } }); }
   catch (e) { toast(e.message); }
 }
@@ -3176,6 +3334,18 @@ document.addEventListener('click', async (e) => {
     ta.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') undo(); if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); save(); } });
     return;
   }
+  if (t.dataset.runCode !== undefined) return runInTerminal(t.closest('.codeblk').querySelector('code').textContent);
+  if (t.dataset.copyCode !== undefined) { const ok = await clip(t.closest('.codeblk').querySelector('code').textContent); buzz(6); t.textContent = ok ? 'Copied ✓' : 'Couldn’t copy'; t.classList.add('done'); setTimeout(() => { t.textContent = 'Copy'; t.classList.remove('done'); }, 1600); return; }
+  if (t.dataset.pin) return togglePin(Number(t.dataset.pin));
+  if (t.dataset.pinGo) { const el = $(`#thread [data-mid="${t.dataset.pinGo}"]`); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); } return; }
+  if (t.dataset.quote) { const m = S.messages.find((x) => x.id === Number(t.dataset.quote)), ta = $('#msg'); if (ta && m) { ta.value = quoteOf(m) + ta.value; autosize(ta); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } return; }
+  if (t.dataset.branch) {
+    const m = S.messages.find((x) => x.id === Number(t.dataset.branch)); if (!m || S.current?.type !== 'bot') return;
+    const botId = S.current.id;
+    try { const { key } = await api('/api/threads', { method: 'POST', body: { botId, projectId: threadOf(threadKey())?.project_id || null } }); sessionDraft.set(key, 'Picking up from this earlier reply:\n' + quoteOf(m)); sideOpen[botId] = true; saveSideOpen(); await refreshState(); openThread(key); }
+    catch (err) { toast(err.message); }
+    return;
+  }
   if (t.dataset.copy) { const m = S.messages.find((x) => x.id === Number(t.dataset.copy)); const ok = await clip(m?.body || ''); buzz(6); return toast(ok ? 'Copied' : 'Couldn’t copy'); }
   if (t.dataset.edit) { const m = S.messages.find((x) => x.id === Number(t.dataset.edit)); const ta = $('#msg'); if (ta && m) { ta.value = m.body; autosize(ta); ta.focus(); } return; }
   if (t.dataset.retry) { const m = S.messages.find((x) => x.id === Number(t.dataset.retry)); if (m) await api(`/api/threads/${encodeURIComponent(threadKey())}/messages`, { method: 'POST', body: { text: m.body } }); return; }
@@ -3192,11 +3362,23 @@ document.addEventListener('click', async (e) => {
   if (act) closePopover();
   switch (act) {
     case 'new-menu': e.stopPropagation(); return popover(t, [...(cur ? [['new-thread', `New thread with ${esc(cur.name)}`, TI.chat]] : []), ['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['new-side-group', 'New sidebar group', ICON.folder], ['new-shared-project', 'New shared project', ICON.folder], ['new-code-project', 'New Nimbus Code project', CODE_ICON], ['market', 'Browse Connectors', ICON.grid]]);
+    case 'more-menu': {
+      e.stopPropagation(); if (!cur) return;
+      const nR = S.data.routines.filter((r) => r.bot_id === cur.id).length, nA = artNew[threadKey()] || 0;
+      const comp = cur.computer && S.data.computers;
+      return popover(t, [['voice', 'Voice chat', ICON.voice], ['routines', `Routines${nR ? ` (${nR})` : ''}`, ICON.clock],
+        comp ? ['computer', 'Computer', ICON.monitor] : ['browser', 'Browser', ICON.globe],
+        ['plugins', `Plugins${cur.plugins.length ? ` (${cur.plugins.length})` : ''}`, ICON.plug], ['memory', 'Memory', ICON.book],
+        ['artifacts', `Artifacts${nA ? ` (${nA} new)` : ''}`, ICON.grid], ['pane-menu', 'Split pane', ICON.split], ['edit-bot', 'Bot settings', ICON.gear]]);
+    }
+    case 'home': $('#side').classList.remove('open'); return openHome();
+    case 'palette': return openPalette();
+    case 'home-ask': return homeAsk();
     case 'claude': return claudeModal();
     case 'docs': return docsModal();
     case 'artifacts': return openArtifacts();
     case 'files': return filesModal();
-    case 'user-menu': e.stopPropagation(); return popover(t, [['appearance', 'Appearance', ICON.gear], ['language', 'Language', ICON.globe], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['docs', 'Documents', ICON.book], ['claude', S.data.claude?.mode === 'none' ? 'Connect Claude ⚠' : 'Claude account', ICON.plug], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
+    case 'user-menu': e.stopPropagation(); return popover(t, [['appearance', 'Appearance', ICON.gear], ['shortcuts', 'Keyboard shortcuts', ICON.keyboard], ['language', 'Language', ICON.globe], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['docs', 'Documents', ICON.book], ['claude', S.data.claude?.mode === 'none' ? 'Connect Claude ⚠' : 'Claude account', ICON.plug], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
     case 'new-bot': return botModal();
     case 'edit-bot': return botModal(cur);
     case 'new-room': return roomModal();
@@ -3229,7 +3411,16 @@ document.addEventListener('click', async (e) => {
     case 'th-unarchive': if (!menuThread) return; try { await api(`/api/threads/${menuThread.id}`, { method: 'PATCH', body: { archived: false } }); await refreshState(); renderMain(); } catch (err) { toast(err.message); } return;
     case 'th-move': return menuThread && moveThreadModal(menuThread);
     case 'th-archive': if (!menuThread) return; try { await api(`/api/threads/${menuThread.id}`, { method: 'PATCH', body: { archived: true } }); await refreshState(); openThread('bot:' + menuThread.bot_id); toast('Archived. Find it under the bot’s “Archived” list.'); } catch (err) { toast(err.message); } return;
-    case 'th-delete': if (!menuThread || !confirm(`Delete “${menuThread.title || 'New thread'}” and its messages? This can’t be undone.`)) return; try { await api(`/api/threads/${menuThread.id}`, { method: 'DELETE' }); await refreshState(); openThread('bot:' + menuThread.bot_id); } catch (err) { toast(err.message); } return;
+    case 'th-delete': {
+      // Hidden right away; really deleted after a few seconds unless Undo is pressed.
+      const th = menuThread; if (!th) return;
+      const row = document.querySelector(`#side [data-open="t:${th.id}"]`); if (row) row.hidden = true;
+      if (threadKey() === 't:' + th.id) openThread('bot:' + th.bot_id);
+      let undone = false; PENDING_DEL.add(th.id);
+      const go = setTimeout(async () => { PENDING_DEL.delete(th.id); if (undone) return; try { await api(`/api/threads/${th.id}`, { method: 'DELETE' }); await refreshState(); } catch (err) { toast(err.message); if (row) row.hidden = false; } }, 5200);
+      toast(`Deleted “${th.title || 'New thread'}”`, { action: 'Undo', onAction: () => { undone = true; PENDING_DEL.delete(th.id); clearTimeout(go); renderSide(); if (row) row.hidden = false; } });
+      return;
+    }
     case 'pr-edit': return menuProject && projectModal(menuProject);
     case 'pr-thread': return menuProject && (menuProject.owner_bot_id != null ? newThread(menuProject.owner_bot_id, menuProject.id) : null);
     case 'new-shared-project': return projectModal(null, { shared: true });
@@ -3344,6 +3535,7 @@ document.addEventListener('drop', (e) => {
 window.addEventListener('hashchange', () => {
   const h = location.hash.slice(1);
   if (/^(bot|room|t):\d+$/.test(h) && h !== threadKey()) openThread(h);
+  else if (h === 'home' && !S.home) openHome();
 });
 
 // ---------- Office files: preview in the side pane, versions, sharing, editing ----------
@@ -3575,6 +3767,7 @@ applyTheme();
   const hash = location.hash.slice(1);
   const first = Object.entries(S.data.last).sort((a, b) => b[1].at - a[1].at)[0]?.[0];
   if (/^(bot|room|t):\d+$/.test(hash)) openThread(hash);
+  else if (!EMBED && (hash === 'home' || !hash)) openHome();
   else if (hash === 'code' && !EMBED) newCodeThread();
   else if (EMBED) renderMain();
   else if (/^doc:d_[0-9a-f]+$/.test(hash)) { if (first || S.data.bots[0]) await openThread(first || 'bot:' + S.data.bots[0].id); openDoc(hash.slice(4)); }
@@ -3610,15 +3803,16 @@ function setSideCollapsed(on) { document.body.classList.toggle('side-collapsed',
 // type an address or a search, and click, scroll and type into the page yourself (e.g. to sign in).
 const BR = { bot: null, es: null, ro: null, fitted: false, w: 1280, h: 800, typing: false };
 function stopBrowserView() { BR.es?.close(); BR.es = null; BR.bot = null; BR.ro?.disconnect(); BR.ro = null; }
-function openBrowser(botId) {
-  closeDoc(); closeInfo(); $('#aside').classList.remove('open');
+// host: render into this element (a workspace tile) instead of the side pane.
+function openBrowser(botId, host = null) {
+  if (host) stopBrowserView(); else { closeDoc(); closeInfo(); $('#aside').classList.remove('open'); }
   const b = S.data.bots.find((x) => x.id === botId);
-  const el = $('#docpane');
-  el.classList.add('open', 'wide');
-  el.innerHTML = `<header class="viewer-head">
+  const el = host || $('#docpane');
+  if (!host) el.classList.add('open', 'wide');
+  el.innerHTML = `${host ? '<b data-br-title hidden></b>' : `<header class="viewer-head">
       <div class="viewer-title">${ICON.globe}<b data-br-title>${esc(b?.name || 'Bot')}’s browser</b></div>
       <button class="icon-btn" data-br="close" aria-label="Close browser">${ICON.close}</button>
-    </header>
+    </header>`}
     <form class="br-bar" data-br-form>
       <button type="button" class="icon-btn" data-br="back" aria-label="Back">${ICON.back}</button>
       <button type="button" class="icon-btn" data-br="forward" aria-label="Forward">${ICON.fwd}</button>
@@ -3926,3 +4120,124 @@ function shortcutsModal() {
     addEventListener('keydown', rec, true);
   });
 }
+
+
+// ---------- unread ----------
+// A chat is unread when a bot (not you) wrote in it after you last had it open. Remembered per device.
+let SIDE_ITEMS = [];
+const SEEN = (() => { try { return JSON.parse(localStorage.seen || '{}'); } catch { return {}; } })();
+function markSeen(k, at) { if ((SEEN[k] || 0) < at) { SEEN[k] = at; clearTimeout(markSeen.t); markSeen.t = setTimeout(() => { localStorage.seen = JSON.stringify(SEEN); }, 500); } }
+const isActiveItem = (it, key) => key === it.key || (it.bot && S.current?.type === 'bot' && S.current.id === it.bot.id);
+function isUnread(it) {
+  if (!it.last || it.last.author === 'user' || isActiveItem(it, threadKey())) return false;
+  if (!(it.key in SEEN)) { SEEN[it.key] = it.last.at; return false; } // first visit on this device: nothing is "new"
+  return it.last.at > SEEN[it.key];
+}
+const homeCount = () => (S.data?.approvals.length || 0) + SIDE_ITEMS.filter(isUnread).length;
+
+// ---------- Home ----------
+function openHome() {
+  const prev = threadKey(); if (prev) sessionDraft.set(prev, $('#msg')?.value || '');
+  if (BR.bot) closeDoc();
+  S.current = null; S.home = true; S.messages = []; CM.draft = null; setCodeMode(false);
+  history.replaceState(null, '', '#home');
+  if (!EMBED) paneMainKey?.('home');
+  renderSide(); renderMain();
+}
+function greeting() { const h = new Date().getHours(); return h < 5 ? 'Up late' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; }
+function renderHome() {
+  const d = S.data, first = (userName() === 'You' ? '' : userName()).split(/[\s.@]/)[0];
+  const working = d.bots.filter((b) => b.status.state !== 'idle');
+  const unread = SIDE_ITEMS.filter(isUnread);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const ranToday = d.routines.filter((r) => r.last_run && r.last_run * 1000 >= today.getTime()).sort((a, b) => b.last_run - a.last_run);
+  const card = (title, body, extra = '') => `<section class="home-card ${extra}"><h3>${title}</h3>${body}</section>`;
+  const row = (key, av, top, sub, right = '') => `<button class="home-row" data-open="${esc(key)}">${av}<span class="hr-meta"><b>${top}</b><small>${sub}</small></span>${right}</button>`;
+  const recent = SIDE_ITEMS.filter((it) => it.last).slice(0, 6);
+  return `<header class="head"><button class="icon-btn menu-btn" data-act="menu" aria-label="Menu">${ICON.menu}</button><b class="home-title">Home</b>
+      <div class="actions" style="margin-left:auto"><button class="btn small" data-act="palette" title="Jump anywhere">${ICON.search}<span>Jump to…</span><kbd>Ctrl K</kbd></button></div></header>
+    <div class="thread home"><div class="home-inner">
+      <h1 class="home-hi">${greeting()}${first ? ', ' + esc(first) : ''}.</h1>
+      <p class="home-sub">${working.length ? `${working.length} bot${working.length === 1 ? ' is' : 's are'} working` : 'All your bots are idle'}${d.approvals.length ? ` · <b>${d.approvals.length} waiting for you</b>` : ''}${unread.length ? ` · ${unread.length} unread` : ''}.</p>
+      <form class="home-ask" id="home-ask" autocomplete="off">
+        <select id="home-bot" aria-label="Bot">${d.bots.map((b) => `<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select>
+        <input id="home-q" placeholder="Ask a bot something…" aria-label="Message">
+        <button class="btn primary" data-act="home-ask" type="submit">Send</button>
+      </form>
+      <div class="home-grid">
+        ${d.approvals.length ? card(`${ICON.lock} Needs you`, d.approvals.map((a) => row(a.thread, avatar(bot(a.bot_id), 30), esc(bot(a.bot_id)?.name || 'Bot'), esc(describeTool(a.tool, a.input)), `<span class="muted">${timeAgo(a.created_at)}</span>`)).join(''), 'urgent') : ''}
+        ${card('Working now', working.length ? working.map((b) => row('bot:' + b.id, avatar(b, 30), esc(b.name), esc(b.status.label || 'Working…'), '<span class="dot working"></span>')).join('') : '<div class="muted">Nobody is busy. Ask something above.</div>')}
+        ${card('Unread', unread.length ? unread.map((it) => row(it.key, it.av, esc(it.name), esc(it.last.text), `<span class="muted">${stamp(it.last.at)}</span>`)).join('') : '<div class="muted">You’re all caught up.</div>')}
+        ${card('Routines today', (ranToday.length ? ranToday.map((r) => row('bot:' + r.bot_id, avatar(bot(r.bot_id), 30), esc(bot(r.bot_id)?.name || 'Bot'), esc(r.prompt.slice(0, 80)), `<span class="muted">ran ${clock(r.last_run)}</span>`)).join('') : '<div class="muted">Nothing has run yet today.</div>')
+          + (d.upNext.length ? `<div class="home-next">Next: ${d.upNext.slice(0, 3).map((r) => `<span>${whenNext(r.next)} · ${esc(bot(r.bot_id)?.name || '')}</span>`).join('')}</div>` : ''))}
+        ${d.proxmox ? `<section class="home-card wide" id="home-pve">${pveHomeHtml(pveLast)}</section>` : ''}
+        ${card('Recent chats', recent.map((it) => row(it.key, it.av, esc(it.name), esc((it.last.author === 'user' ? 'You: ' : '') + it.last.text), `<span class="muted">${stamp(it.last.at)}</span>`)).join('') || '<div class="muted">No chats yet.</div>', 'wide')}
+      </div>
+    </div></div>`;
+}
+async function homeAsk() {
+  const id = Number($('#home-bot')?.value), text = $('#home-q')?.value.trim();
+  if (!id || !text) return $('#home-q')?.focus();
+  try { await api(`/api/threads/${encodeURIComponent('bot:' + id)}/messages`, { method: 'POST', body: { text } }); openThread('bot:' + id); }
+  catch (e) { toast(e.message); }
+}
+document.addEventListener('submit', (e) => { if (e.target.id === 'home-ask') { e.preventDefault(); homeAsk(); } });
+
+// ---------- Ctrl+K: jump anywhere ----------
+function paletteItems() {
+  const d = S.data, out = [['home', 'Home', 'Go', ICON.home]];
+  for (const b of d.bots) out.push(['open:bot:' + b.id, b.name, 'Bot', avatar(b, 20)]);
+  for (const r of d.rooms) out.push(['open:room:' + r.id, r.name, 'Group chat', roomAvatar(r, 20)]);
+  for (const t of d.threads || []) if (t.kind === 'chat' && !t.archived) out.push(['open:t:' + t.id, t.title || 'New thread', `Thread · ${bot(t.bot_id)?.name || ''}`, TI.chat]);
+  const cur = bot(S.current?.id);
+  if (cur && S.current?.type === 'bot') out.push(['new-thread', `New thread with ${cur.name}`, 'Action', ICON.compose], ['routines', `${cur.name}’s routines`, 'Action', ICON.clock],
+    ['memory', `${cur.name}’s memory`, 'Action', ICON.book], ['plugins', `${cur.name}’s plugins`, 'Action', ICON.plug], ['edit-bot', `${cur.name} settings`, 'Action', ICON.gear], ['voice', `Voice chat with ${cur.name}`, 'Action', ICON.voice]);
+  out.push(['new-bot', 'New bot', 'Action', ICON.plus], ['new-room', 'New group chat', 'Action', ICON.plus], ['docs', 'Documents', 'Open', ICON.book],
+    ['appearance', 'Appearance and themes', 'Settings', ICON.gear], ['server', 'Server settings', 'Settings', ICON.monitor], ['log', 'Activity log', 'Open', ICON.clock],
+    ['market', 'Connectors', 'Open', ICON.grid], ['cc-plugins', 'Plugins & skills', 'Open', ICON.plug], ['shortcuts', 'Keyboard shortcuts', 'Help', ICON.keyboard], ['panel', 'Approvals and activity', 'Open', ICON.bell]);
+  return out;
+}
+function openPalette() {
+  if (document.querySelector('.palette')) return;
+  modal(`<div class="palette"><label class="search pal-search">${ICON.search}<input id="pal-q" placeholder="Jump to a bot, thread or action…" autocomplete="off"></label><div class="pal-list" id="pal-list"></div>
+    <div class="pal-hint">↑↓ to move · Enter to open · Esc to close · type 2+ letters to also search messages</div></div>`, { cls: 'pal-modal' });
+  const items = paletteItems(); let sel = 0, shown = items, hits = [], seq = 0;
+  const draw = () => {
+    const all = [...shown.slice(0, 40), ...hits];
+    sel = Math.max(0, Math.min(sel, all.length - 1));
+    $('#pal-list').innerHTML = all.length ? all.map(([act, label, kind, icon], i) => `<button class="pal-item ${i === sel ? 'sel' : ''}" data-pal="${esc(act)}">${icon || ''}<span class="pal-label">${esc(label)}</span><small>${esc(kind)}</small></button>`).join('') : '<div class="muted pal-empty">Nothing matches</div>';
+    $('#pal-list .sel')?.scrollIntoView({ block: 'nearest' });
+  };
+  const run = (act) => {
+    closeModal();
+    if (act.startsWith('open:')) return openThread(act.slice(5));
+    const b = document.createElement('button'); b.dataset.act = act; b.style.display = 'none'; document.body.append(b); b.click(); b.remove();
+  };
+  const q = $('#pal-q');
+  q.addEventListener('input', async () => {
+    const v = q.value.trim().toLowerCase(), words = v.split(/\s+/).filter(Boolean);
+    shown = !v ? items : items.map((it) => [it, it[1].toLowerCase()]).filter(([, l]) => words.every((w) => l.includes(w)))
+      .sort((a, b) => (b[1].startsWith(words[0]) - a[1].startsWith(words[0]))).map(([it]) => it);
+    hits = []; sel = 0; draw();
+    if (v.length >= 2) { const my = ++seq; try { const r = await api('/api/search?q=' + encodeURIComponent(v)); if (my !== seq) return;
+      hits = r.results.slice(0, 8).map((m) => ['open:' + m.thread, m.snippet, `Message · ${m.author === 'user' ? 'You' : bot(Number(m.author))?.name || ''}`, ICON.search]); draw(); } catch {} }
+  });
+  q.addEventListener('keydown', (e) => {
+    const n = shown.slice(0, 40).length + hits.length;
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = (sel + 1) % Math.max(1, n); draw(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = (sel - 1 + n) % Math.max(1, n); draw(); }
+    else if (e.key === 'Enter') { e.preventDefault(); const el = $('#pal-list .sel'); if (el) run(el.dataset.pal); }
+  });
+  $('#pal-list').addEventListener('click', (e) => { const b = e.target.closest('[data-pal]'); if (b) run(b.dataset.pal); });
+  draw(); q.focus();
+}
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); if (document.querySelector('.palette')) closeModal(); else openPalette(); }
+});
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-bt]'); if (b) toggleBotTile(b.dataset.bt); });
+// Same shortcuts as Claude Code desktop: Ctrl+` terminal, Ctrl+Shift+B browser (Nimbus Code threads).
+document.addEventListener('keydown', (e) => {
+  if (!codeProject(threadKey()) || !(e.ctrlKey || e.metaKey)) return;
+  const k = e.key === '`' ? 'terminal' : e.shiftKey && e.key.toLowerCase() === 'b' ? 'preview' : null;
+  if (k) { e.preventDefault(); toggleBotTile(k); }
+});
