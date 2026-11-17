@@ -338,14 +338,17 @@ export async function checkpointAfter(runId) {
 export async function undoTurn(runId) {
   const cp = q('SELECT * FROM checkpoints WHERE run_id=?').get(Number(runId));
   if (!cp?.after) throw Object.assign(new Error('Nothing to undo for that turn'), { status: 404 });
-  if (cp.undone) throw Object.assign(new Error('That turn was already undone'), { status: 409 });
-  const changed = (await git(cp.cwd, ['diff', '--name-status', '--no-renames', cp.before, cp.after])).trim().split('\n').filter(Boolean);
-  for (const l of changed) {
-    const [st, file] = l.split('\t');
-    if (st === 'A') fs.rmSync(path.join(cp.cwd, file), { force: true });
-    else await git(cp.cwd, ['restore', `--source=${cp.before}`, '--worktree', '--', file]);
-  }
-  q('UPDATE checkpoints SET undone=1 WHERE run_id=?').run(cp.run_id);
+  if (q("SELECT 1 FROM runs WHERE thread=? AND status IN ('queued','running')").get(cp.thread)) throw Object.assign(new Error('The bot is working in this chat. Stop it or wait, then undo.'), { status: 409 });
+  if (!q('UPDATE checkpoints SET undone=1 WHERE run_id=? AND COALESCE(undone, 0)=0').run(cp.run_id).changes) throw Object.assign(new Error('That turn was already undone'), { status: 409 });
+  let changed;
+  try {
+    changed = (await git(cp.cwd, ['diff', '--name-status', '--no-renames', cp.before, cp.after])).trim().split('\n').filter(Boolean);
+    for (const l of changed) {
+      const [st, file] = l.split('\t');
+      if (st === 'A') fs.rmSync(path.join(cp.cwd, file), { force: true });
+      else await git(cp.cwd, ['restore', `--source=${cp.before}`, '--worktree', '--', file]);
+    }
+  } catch (e) { q('UPDATE checkpoints SET undone=0 WHERE run_id=?').run(cp.run_id); throw e; } // let it be tried again
   changedNow(cp.thread);
   return { files: changed.length };
 }
@@ -497,7 +500,14 @@ function previewState(key) {
 const freePort = () => new Promise((resolve) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 let proxyHook = null; // set by server.js: (targetPort) => proxyPort
 export function setPreviewProxy(fn) { proxyHook = fn; }
-export async function startPreview(key) {
+const previewStarting = new Map(); // key -> promise, so a double click starts one dev server, not two
+export function startPreview(key) {
+  if (previewStarting.has(key)) return previewStarting.get(key);
+  const p = startPreviewNow(key).finally(() => previewStarting.delete(key));
+  previewStarting.set(key, p);
+  return p;
+}
+async function startPreviewNow(key) {
   const c = threadCode(key); if (!c) throw Object.assign(new Error('Not a code thread'), { status: 404 });
   if (previews.has(key)) return previewState(key);
   const det = detectPreview(c.cwd, c.p), cmd = det?.cmd;

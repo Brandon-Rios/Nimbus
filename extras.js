@@ -94,25 +94,32 @@ export async function check(w) {
   return { up: false, detail: 'unknown kind' };
 }
 const ICONS = { up: '🟢', down: '🔴' };
+let sweeping = false;
 async function sweep() {
-  for (const w of q('SELECT * FROM watches WHERE enabled=1').all()) {
-    const r = await check(w);
-    const fails = r.up ? 0 : w.fails + 1;
-    // Down only after two misses in a row (one blip is ignored); back up on the first success.
-    const state = r.up ? 'up' : fails >= 2 ? 'down' : w.state === 'unknown' ? 'unknown' : w.state;
-    const changed = state !== w.state && state !== 'unknown';
-    q('UPDATE watches SET fails=?, state=?, last_check=unixepoch(), last_ms=?, detail=?, since=? WHERE id=?')
-      .run(fails, state, r.ms ?? null, r.detail || '', changed || !w.since ? now() : w.since, w.id);
-    if (!changed || (w.state === 'unknown' && state === 'up')) continue;
-    q('INSERT INTO watch_log (watch_id, state, detail) VALUES (?,?,?)').run(w.id, state, r.detail || '');
-    broadcast('extras', { what: 'watch' });
-    if (!w.bot_id) continue;
-    const down = state === 'down';
-    addMessage(general(w.bot_id), 'system', 'note', `${ICONS[state]} Watchdog: **${w.name}** is ${down ? 'down' : 'back up'} (${r.detail}).`);
-    if (down && w.playbook_id) runPlaybook(w.playbook_id, 'The watchdog ran').catch(() => {});
-    else if (down && w.wake) runBot({ botId: w.bot_id, thread: general(w.bot_id), source: 'watchdog',
-      prompt: `Nimbus watchdog: "${w.name}" (${w.kind} ${w.target}) stopped answering: ${r.detail}. Find out why and fix it if it's safe; otherwise tell the user what you found. Reply briefly.` });
-  }
+  if (sweeping) return; // a slow sweep (many timeouts) must not overlap the next one: that doubles alerts
+  sweeping = true;
+  try { for (const { id } of q('SELECT id FROM watches WHERE enabled=1').all()) await sweepOne(id); } finally { sweeping = false; }
+}
+async function sweepOne(id) {
+  const w0 = q('SELECT * FROM watches WHERE id=? AND enabled=1').get(id); if (!w0) return;
+  const r = await check(w0);
+  const w = q('SELECT * FROM watches WHERE id=? AND enabled=1').get(id); // edited, paused or deleted during the check
+  if (!w || w.target !== w0.target || w.kind !== w0.kind) return;
+  const fails = r.up ? 0 : w.fails + 1;
+  // Down only after two misses in a row (one blip is ignored); back up on the first success.
+  const state = r.up ? 'up' : fails >= 2 ? 'down' : w.state === 'unknown' ? 'unknown' : w.state;
+  const changed = state !== w.state && state !== 'unknown';
+  q('UPDATE watches SET fails=?, state=?, last_check=unixepoch(), last_ms=?, detail=?, since=? WHERE id=?')
+    .run(fails, state, r.ms ?? null, r.detail || '', changed || !w.since ? now() : w.since, w.id);
+  if (!changed || (w.state === 'unknown' && state === 'up')) return;
+  q('INSERT INTO watch_log (watch_id, state, detail) VALUES (?,?,?)').run(w.id, state, r.detail || '');
+  broadcast('extras', { what: 'watch' });
+  if (!w.bot_id) return;
+  const down = state === 'down';
+  addMessage(general(w.bot_id), 'system', 'note', `${ICONS[state]} Watchdog: **${w.name}** is ${down ? 'down' : 'back up'} (${r.detail}).`);
+  if (down && w.playbook_id) runPlaybook(w.playbook_id, 'The watchdog ran').catch(() => {});
+  else if (down && w.wake) runBot({ botId: w.bot_id, thread: general(w.bot_id), source: 'watchdog',
+    prompt: `Nimbus watchdog: "${w.name}" (${w.kind} ${w.target}) stopped answering: ${r.detail}. Find out why and fix it if it's safe; otherwise tell the user what you found. Reply briefly.` });
 }
 // First start: a couple of checks every install has; add your own services in Watchdog.
 function seed() {

@@ -284,7 +284,7 @@ export function registerExtras3(route, { json, body }) {
     if (!pick.length) return json(res, 400, { error: 'Nothing to add' });
     const f = path.join(DATA_DIR, 'bots', m.author, 'MEMORY.md');
     const cur = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '# What I have learned\n';
-    fs.writeFileSync(f, cur.replace(/\n*$/, '\n') + pick.map((l) => l.replace(/^-\s+/, '- ') + ` (self-review ${new Date().toISOString().slice(0, 10)})`).join('\n') + '\n');
+    fs.appendFileSync(f, (fs.existsSync(f) ? (cur.endsWith('\n') ? '' : '\n') : cur) + pick.map((l) => l.replace(/^-\s+/, '- ') + ` (self-review ${new Date().toISOString().slice(0, 10)})`).join('\n') + '\n');
     setSetting('dream_applied:' + m.id, String(now()));
     addMessage(m.thread, 'system', 'note', `✓ Added ${pick.length} line${pick.length === 1 ? '' : 's'} to ${botName(Number(m.author))}’s memory.`);
     json(res, 200, { ok: true, added: pick.length });

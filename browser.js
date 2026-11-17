@@ -50,7 +50,7 @@ function userAgent(chrome) {
 export function ensureBrowser(botId) {
   botId = String(botId);
   const b = browsers.get(botId);
-  if (b && !b.proc.killed && b.proc.exitCode === null) { b.used = Date.now(); return b.ready; }
+  if (b && (!b.proc || (!b.proc.killed && b.proc.exitCode === null))) { b.used = Date.now(); return b.ready; } // starting or running
   const chrome = findChrome();
   if (!chrome) return Promise.reject(new Error('No Chromium found. Install it with: npx playwright install chromium (or set NIMBUS_CHROME).'));
   const nb = { proc: null, port: 0, page: null, viewers: new Set(), info: { url: '', title: '' }, used: Date.now() };
@@ -70,7 +70,7 @@ export function ensureBrowser(botId) {
     throw new Error('The browser didn’t start. On the server, as root: npx playwright install-deps chromium');
   })();
   browsers.set(botId, nb);
-  nb.ready.catch(() => browsers.delete(botId));
+  nb.ready.catch(() => { if (browsers.get(botId) === nb) browsers.delete(botId); });
   return nb.ready;
 }
 

@@ -133,6 +133,18 @@ async function main() {
 
   console.log('Settings');
   await test('settings validate input', async () => eq((await req('PUT', '/api/settings', { thread_limit: '9' })).status, 400));
+  await test('settings save all or nothing', async () => {
+    eq((await req('PUT', '/api/settings', { usage_guard_pct: '20', thread_limit: '9' })).status, 400);
+    ok((await req('GET', '/api/settings')).json.usage_guard_pct !== '20', 'earlier field was saved anyway');
+  });
+  await test('memory edit refuses to overwrite a newer version', async () => {
+    const m = (await req('GET', `/api/bots/${botId}/memory`)).json;
+    fs.appendFileSync(path.join(DATA, 'bots', String(botId), 'MEMORY.md'), '- bot learned this meanwhile\n');
+    eq((await req('PUT', `/api/bots/${botId}/memory`, { text: 'mine', hash: m.hash })).status, 409);
+    ok(fs.readFileSync(path.join(DATA, 'bots', String(botId), 'MEMORY.md'), 'utf8').includes('meanwhile'), 'bot line kept');
+    const m2 = (await req('GET', `/api/bots/${botId}/memory`)).json;
+    eq((await req('PUT', `/api/bots/${botId}/memory`, { text: m2.text + '- mine\n', hash: m2.hash })).status, 200);
+  });
   await test('trusted proxy: real device address is used', async () => {
     eq((await req('PUT', '/api/settings', { trusted_proxies: '127.0.0.1' })).status, 200);
     for (let i = 0; i < 8; i++) await req('POST', '/api/login', { password: 'bad' }, { 'x-forwarded-for': '10.7.7.7' });

@@ -622,9 +622,14 @@ setInterval(async () => {
   } catch {}
 }, 5 * 60_000).unref();
 
-route('GET', '/api/bots/:id/memory', (req, res, p) => json(res, 200, { text: fs.readFileSync(path.join(botDir(p.id), 'MEMORY.md'), 'utf8') }));
+const memHash = (t) => crypto.createHash('sha1').update(t).digest('hex');
+route('GET', '/api/bots/:id/memory', (req, res, p) => { const text = fs.readFileSync(path.join(botDir(p.id), 'MEMORY.md'), 'utf8'); json(res, 200, { text, hash: memHash(text) }); });
 route('PUT', '/api/bots/:id/memory', async (req, res, p) => {
-  fs.writeFileSync(path.join(botDir(p.id), 'MEMORY.md'), String((await body(req)).text || ''));
+  const b = await body(req), f = path.join(botDir(p.id), 'MEMORY.md');
+  // The bot may have added a line while you were editing: don't overwrite it with the copy you opened.
+  const cur = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
+  if (b.hash && b.hash !== memHash(cur)) return json(res, 409, { error: 'The bot changed its memory while you were editing. Reopen it to see the new version.' });
+  const tmp = f + '.tmp-' + process.pid; fs.writeFileSync(tmp, String(b.text || '')); fs.renameSync(tmp, f); // readers never see a half-written file
   broadcast('state_changed', {});
   json(res, 200, { ok: true });
 });
@@ -1082,7 +1087,7 @@ route('GET', '/api/settings', (req, res) => {
   json(res, 200, out);
 });
 route('PUT', '/api/settings', async (req, res) => {
-  const b = await body(req);
+  const b = await body(req), toSave = [];
   for (const s of SETTINGS) {
     if (b[s.key] === undefined || (s.secret && b[s.key] === '__saved__')) continue;
     const v = String(b[s.key]).trim();
@@ -1094,8 +1099,9 @@ route('PUT', '/api/settings', async (req, res) => {
     if (s.key === 'sandbox' && v && !/^(off|all|-?\d+)([\s,]+-?\d+)*$/i.test(v.replace(/^all\b/i, 'all'))) return json(res, 400, { error: 'Sandbox: off, all, bot numbers (e.g. 5,9), or all,-3 for every bot but #3' });
     if (s.key === 'backup_target' && v && !/^[\w.-]+@[\w.-]+:\/[^\s]*$/.test(v)) return json(res, 400, { error: 'Backup target should look like user@host:/path' });
     if (/_url$/.test(s.key) && v && !/^https?:\/\/[^\s]+$/.test(v)) return json(res, 400, { error: `${s.key.replace('_', ' ')} must start with http:// or https://` });
-    setSetting(s.key, v);
+    toSave.push([s.key, v]);
   }
+  db.exec('BEGIN'); try { for (const [k, v] of toSave) setSetting(k, v); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; }
   pveCache = null;
   broadcast('state_changed', {});
   json(res, 200, { ok: true, computers: computersOn(), proxmox: !!pveConfig() });
@@ -1469,6 +1475,8 @@ route('POST', '/api/hook/pretool', async (req, res) => {
   if (planAllows(run.thread, tool, input)) return json(res, 200, { decision: 'allow' }); // part of a plan you approved
   const auto = await autoApprove(bot, run, tool, input).catch(() => ({ allow: false })); // Settings → Auto-approve
   if (auto.allow) return json(res, 200, { decision: 'allow' });
+  // The check can take seconds; if the run was stopped meanwhile, don't leave a card nobody can answer.
+  if (q('SELECT status FROM runs WHERE id=?').get(run.id)?.status !== 'running') return json(res, 200, { decision: 'deny', reason: 'The task was stopped.' });
   const ins = q('INSERT INTO approvals (run_id, bot_id, thread, tool, input) VALUES (?,?,?,?,?)').run(run.id, bot.id, run.thread, tool, redact(JSON.stringify(input || {})));
   const approvalId = Number(ins.lastInsertRowid);
   const pattern = tool === 'Bash' ? commandPrefix(String(input?.command || '')).trim() + ' …' : null;

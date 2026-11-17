@@ -1605,6 +1605,8 @@ function renderApproval(m, b, prev) {
 }
 
 // ---------- navigation ----------
+let openSeq = 0;
+const liveBuf = new Map(); // id -> message (or a deletion) that arrived for the chat being loaded
 async function openThread(key) {
   let [type, id] = key.split(':'), thread = null;
   if (type === 't') {
@@ -1621,14 +1623,21 @@ async function openThread(key) {
   history.replaceState(null, '', '#' + key);
   if (EMBED) parent.postMessage({ nimbusPane: 'key', id: EMBED, key }, location.origin); else paneMainKey(key);
   if (infoBot) { if (type === 'bot') { if (infoBot !== Number(id)) { $('#info').innerHTML = ''; openInfo({ id: Number(id) }); } } else closeInfo(); }
-  S.loadingThread = true; S.messages = [];
+  const seq = ++openSeq; S.loadingThread = true; S.messages = []; liveBuf.clear();
   $('#side').classList.remove('open'); $('#aside').classList.remove('open');
   renderSide(); renderMain();
   codeThreadOpened(key);
-  S.messages = await api(`/api/threads/${encodeURIComponent(key)}/messages`);
+  const list = await api(`/api/threads/${encodeURIComponent(key)}/messages`);
+  // Clicking another chat while this one loaded: a late answer must not replace the newer chat's messages.
+  if (seq !== openSeq || threadKey() !== key) return;
+  // Messages and step updates that arrived while loading are newer than (or missing from) the list: keep them.
+  const byId = new Map(list.map((m, i) => [m.id, i]));
+  for (const m of liveBuf.values()) { if (m.deleted) { if (byId.has(m.id)) list[byId.get(m.id)] = null; } else if (byId.has(m.id)) list[byId.get(m.id)] = m; else if (!list.length || m.id > list[list.length - 1].id) list.push(m); }
+  liveBuf.clear();
+  S.messages = list.filter(Boolean).sort((a, b) => a.id - b.id);
   S.hasOlder = S.messages.length >= PAGE; S.loadingOlder = false;
   S.loadingThread = false;
-  if (threadKey() === key) { renderMain(); $('.thread-inner')?.classList.add('fade-in'); }
+  renderMain(); $('.thread-inner')?.classList.add('fade-in');
 }
 
 // Older messages load in pages as you scroll up to the top of a chat.
@@ -1673,6 +1682,7 @@ function connect() {
   es.addEventListener('message', (e) => {
     const m = JSON.parse(e.data);
     voiceMessage(m);
+    if (S.loadingThread && m.thread === threadKey()) { liveBuf.set(m.id, m); return soon(); }
     if (m.thread === threadKey() && m.author !== 'user' && isArtifactMsg(m) && !S.messages.some((x) => x.id === m.id)) artifactAdded();
     if (m.thread === threadKey() && !S.messages.some((x) => x.id === m.id)) {
       const prev = S.messages[S.messages.length - 1];
@@ -1693,11 +1703,13 @@ function connect() {
   });
   es.addEventListener('message_delete', (e) => {
     const { id } = JSON.parse(e.data);
+    if (S.loadingThread) liveBuf.set(id, { id, deleted: true });
     S.messages = S.messages.filter((x) => x.id !== id);
     document.querySelector(`#thread [data-mid="${id}"]`)?.remove();
   });
   es.addEventListener('message_update', (e) => {
     const m = JSON.parse(e.data);
+    if (S.loadingThread && m.thread === threadKey()) { liveBuf.set(m.id, m); return; }
     const i = S.messages.findIndex((x) => x.id === m.id);
     if (i < 0) return;
     S.messages[i] = m;
@@ -2114,14 +2126,14 @@ function routinesModal(b) {
 }
 
 async function memoryModal(b) {
-  const { text } = await api(`/api/bots/${b.id}/memory`);
+  const { text, hash } = await api(`/api/bots/${b.id}/memory`);
   const el = modal(`<div class="modal-head"><h2>Memory</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
     <p class="muted">What ${esc(b.name)} has learned. It adds to this itself when you tell it a rule; edit freely.</p>
     <label class="field"><textarea id="mem" class="code" rows="14">${esc(text)}</textarea></label>
     <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="mem-save">Save</button></div>`, { wide: true });
   el.addEventListener('click', async (e) => {
     if (e.target.closest('[data-close]')) closeModal();
-    if (e.target.id === 'mem-save') { await api(`/api/bots/${b.id}/memory`, { method: 'PUT', body: { text: $('#mem', el).value } }); closeModal(); toast('Memory saved'); }
+    if (e.target.id === 'mem-save') { await api(`/api/bots/${b.id}/memory`, { method: 'PUT', body: { text: $('#mem', el).value, hash } }).then(() => { closeModal(); toast('Memory saved'); }, (err) => toast(err.message)); }
   });
 }
 

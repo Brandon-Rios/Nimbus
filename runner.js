@@ -438,7 +438,8 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
     if (session) args.push('--resume', session);
     if (ct) { args.push('--add-dir', ownDir); try { await Code.checkpointBefore(runId, thread); } catch (e) { console.error('checkpoint before run', runId, e.message); } }
 
-    q("UPDATE runs SET status='running', started_at=unixepoch(), effort=? WHERE id=?").run(bot.effort, runId);
+    // Only if still queued: Stop pressed while the checkpoint was being taken wins.
+    if (!q("UPDATE runs SET status='running', started_at=unixepoch(), effort=? WHERE id=? AND status='queued'").run(bot.effort, runId).changes) return resolve();
     if (q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='running'").get(botId).n > 1) refreshStatus(botId);
     else setStatus(botId, 'working', isRoom ? 'Working in a group chat' : 'Working…');
 
