@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { botEnv } from './sandbox.js';
 import { botDir, getSetting, setSetting } from './db.js';
 
 const FILE = 'api-tools.json', MAX_OUT = 30_000, TIMEOUT = 60_000;
@@ -35,7 +36,7 @@ export function runTool(botId, name, args, redact) {
   if (!t.approved) return Promise.reject(Object.assign(new Error('Approve this tool first'), { status: 409 }));
   const words = String(args || '').trim().split(/\s+/).filter(Boolean).slice(0, 20);
   return new Promise((resolve) => {
-    const p = spawn('bash', ['-c', t.run, name, ...words], { cwd: botDir(Number(botId)), env: { ...process.env, ARGS: words.join(' ') }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn('bash', ['-c', t.run, name, ...words], { cwd: botDir(Number(botId)), env: botEnv({ ARGS: words.join(' ') }, null, false), stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', killed = false;
     const add = (c) => { if (out.length < MAX_OUT) out += c; };
     p.stdout.on('data', add); p.stderr.on('data', add);

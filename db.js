@@ -1,3 +1,5 @@
+// The database (data/nimbus.db, SQLite built into Node): tables, settings, cached queries, each bot's folder and
+// the CLAUDE.md brief Nimbus writes for it.
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -190,6 +192,14 @@ ${remote ? '' : filesSection()}${remote ? '' : threadsSection()}
 ${teamSection(bot, remote)}
 ${homelabSection()}
 
+## Team memory (shared by all bots)
+- Facts any teammate may need (IPs, versions, where things are, decisions, fixes that worked) go in team memory,
+  not only your MEMORY.md: node ${path.join(path.dirname(ASK_BOT), 'facts.mjs')} add "<fact>" [--topic <word>]
+- Before asking a teammate or re-checking something, search it: node ${path.join(path.dirname(ASK_BOT), 'facts.mjs')} search <words>
+- Past fixes are written up as live docs titled "Post-mortem: …" (doc.mjs list). Check them before fixing a repeat problem.
+- Shared skills (how-tos every bot loads) are in your .claude/skills. After solving something you'll likely repeat, save the steps as a skill:
+  node ${path.join(path.dirname(ASK_BOT), 'skill.mjs')} save <short-name> "<when to use it>" <file with the steps> (list: skill.mjs list)
+
 ## Memory
 @MEMORY.md
 `);
@@ -198,6 +208,16 @@ ${homelabSection()}
 
 // Server settings edited in the app (Settings → Server). Values here override the matching env vars.
 db.exec('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+// A Map that keeps only its newest entries (per-chat caches that would otherwise grow forever).
+export class Capped extends Map {
+  constructor(max) { super(); this.max = max; }
+  set(k, v) { this.delete(k); super.set(k, v); if (this.size > this.max) this.delete(this.keys().next().value); return this; }
+}
+// Lookups the server does all the time (status, usage, busy chats, pending approvals).
+db.exec(`CREATE INDEX IF NOT EXISTS runs_bot_started ON runs(bot_id, started_at);
+  CREATE INDEX IF NOT EXISTS runs_thread_status ON runs(thread, status);
+  CREATE INDEX IF NOT EXISTS runs_status ON runs(status);
+  CREATE INDEX IF NOT EXISTS approvals_status ON approvals(status, bot_id);`);
 export function getSetting(key, envName) {
   const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
   return row ? row.value : (envName ? process.env[envName] || '' : '');

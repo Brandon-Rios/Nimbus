@@ -1,3 +1,6 @@
+// Nimbus server: one HTTP(S) server for the app, its API (route table below), login, live updates (SSE), the hooks
+// bots call while they run, and the proxies for bot computers and code previews. Feature areas live in their own
+// modules (files, docs, code, threads, extras*, pro, pc) and register their routes here. API list: docs/API.md.
 import http from 'node:http';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
@@ -12,7 +15,7 @@ import { redact } from './redact.js';
 import { addClient, broadcast } from './events.js';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import * as Docs from './docs.js';
-import { UPLOADS, MAX_UPLOAD, safeName, uploadPath, readUpload, saveUpload, addVersion, registerFiles } from './files.js';
+import { UPLOADS, MAX_UPLOAD, safeName, uploadPath, readUpload, saveUpload, addVersion, registerFiles, deleteUploads } from './files.js';
 import { claudeEnv, claudeStatus, setClaudeToken, TOKEN_RE } from './claudeauth.js';
 import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport, cancelQueued, editQueued, threadLimit, projectBots } from './runner.js';
 import * as TH from './threads.js';
@@ -24,6 +27,10 @@ import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
 import { startScheduler, nextRun, isValidCron } from './scheduler.js';
 import { getPlanUsage, getModels } from './planusage.js';
 import { registerPro } from './pro.js';
+import { registerExtras, startExtras, moods } from './extras.js';
+import { registerExtras2, startExtras2, journalBefore, planAllows } from './extras2.js';
+import { registerExtras3, startExtras3, autoApprove } from './extras3.js';
+import { registerCode2, PROBE } from './code2.js';
 import { pluginCatalog, setPlugin } from './ccplugins.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -38,6 +45,9 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 recoverRuns();
 startScheduler();
+startExtras();
+startExtras2();
+startExtras3();
 
 // ---------- approvals ----------
 function globToRe(glob) {
@@ -85,21 +95,31 @@ async function body(req, limit = 2e6) {
   for await (const c of req) { s += c; if (s.length > limit) throw new Error('too large'); }
   return s ? JSON.parse(s) : {};
 }
+// Last lines of each bot's MEMORY.md, read again only when the file changes.
+const memCache = new Map(); // botId -> { mtime, lines }
 function tailMemory(botId, n = 3) {
-  try {
-    return fs.readFileSync(path.join(botDir(botId), 'MEMORY.md'), 'utf8').split('\n')
-      .map((l) => l.replace(/^[-*]\s*/, '').trim()).filter((l) => l && !l.startsWith('#')).slice(-n);
-  } catch { return []; }
+  const f = path.join(botDir(botId), 'MEMORY.md');
+  let mtime; try { mtime = fs.statSync(f).mtimeMs; } catch { return []; }
+  let c = memCache.get(botId);
+  if (!c || c.mtime !== mtime) {
+    try { c = { mtime, lines: fs.readFileSync(f, 'utf8').split('\n').map((l) => l.replace(/^[-*]\s*/, '').trim()).filter((l) => l && !l.startsWith('#')) }; } catch { return []; }
+    memCache.set(botId, c);
+  }
+  return c.lines.slice(-n);
 }
-function botView(b) {
-  const st = botStatus.get(b.id) || { state: 'idle', label: 'Idle' };
-  const today = q("SELECT COUNT(*) AS runs, COALESCE(SUM(cost_usd),0) AS cost, COALESCE(SUM(ended_at-started_at),0) AS secs FROM runs WHERE bot_id=? AND started_at >= unixepoch('now','localtime','start of day','utc')").get(b.id);
-  const pending = q("SELECT COUNT(*) AS n FROM approvals WHERE bot_id=? AND status='pending'").get(b.id).n;
-  return { ...b, status: pending ? { state: 'waiting', label: 'Waiting on you' } : st, today };
+// Today's runs and pending approvals for every bot, in one query each (not two per bot).
+function botViews(bots) {
+  const today = new Map(q("SELECT bot_id, COUNT(*) AS runs, COALESCE(SUM(cost_usd),0) AS cost, COALESCE(SUM(ended_at-started_at),0) AS secs FROM runs WHERE started_at >= unixepoch('now','localtime','start of day','utc') GROUP BY bot_id").all().map((r) => [r.bot_id, r]));
+  const pending = new Set(q("SELECT DISTINCT bot_id FROM approvals WHERE status='pending'").all().map((r) => r.bot_id));
+  return bots.map((b) => {
+    const t = today.get(b.id);
+    return { ...b, status: pending.has(b.id) ? { state: 'waiting', label: 'Waiting on you' } : botStatus.get(b.id) || { state: 'idle', label: 'Idle' },
+      today: { runs: t?.runs || 0, cost: t?.cost || 0, secs: t?.secs || 0 } };
+  });
 }
 
 function state(req) {
-  const bots = q('SELECT * FROM bots ORDER BY id').all().map(parseBot).map(botView);
+  const bots = botViews(q('SELECT * FROM bots ORDER BY id').all().map(parseBot));
   const rooms = q('SELECT * FROM rooms ORDER BY id').all().map((r) => ({ ...r, members: roomMembers(r.id).map((m) => m.id) }));
   const approvals = q("SELECT * FROM approvals WHERE status='pending' ORDER BY id").all().map((a) => ({ ...a, input: JSON.parse(a.input || '{}') }));
   const routines = q('SELECT * FROM routines ORDER BY id').all();
@@ -125,7 +145,7 @@ function state(req) {
   const sideGroups = JSON.parse(getSetting('side_groups') || '[]'); // sidebar groups: [{ id, name, collapsed, keys }]
   const { threads, projects } = TH.listAll();
   const busyThreads = q("SELECT DISTINCT thread FROM runs WHERE status='running'").all().map((r) => r.thread);
-  return { busyThreads, sideOrder, sideGroups, threads, projects, threadLimit: threadLimit(), bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), claude: claudeStatus(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
+  return { moods: moods(), busyThreads, sideOrder, sideGroups, threads, projects, threadLimit: threadLimit(), bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), claude: claudeStatus(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
 }
 
 function postToThread(thread, text, files = [], voice = null) {
@@ -222,6 +242,13 @@ route('GET', '/api/files/:id/:name', (req, res, p, url) => {
   const f = readUpload(p.id);
   if (!f) return json(res, 404, { error: 'not found' });
   // Only safe types open in the browser; anything else (HTML, SVG…) downloads, so it can't run script here.
+  // A web page a bot made, shown in Nimbus: its own sandboxed origin (it can run scripts but never reach Nimbus or your
+  // session), so the app's script rules don't have to allow inline scripts.
+  if (url.searchParams.has('sandbox') && (/\.html?$/i.test(f.name) || f.type === 'text/html')) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': f.size, 'x-content-type-options': 'nosniff', 'cache-control': 'private, max-age=31536000, immutable',
+      'content-security-policy': "sandbox allow-scripts allow-forms allow-modals allow-popups; frame-ancestors 'self'" });
+    return fs.createReadStream(uploadPath(f)).pipe(res);
+  }
   const inline = INLINE.test(f.type) && !url.searchParams.has('download');
   res.writeHead(200, { 'content-type': inline ? f.type : 'application/octet-stream', 'content-length': f.size, 'x-content-type-options': 'nosniff',
     'content-security-policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'", 'cache-control': 'private, max-age=31536000, immutable',
@@ -450,6 +477,10 @@ route('GET', '/api/models', async (req, res) => json(res, 200, await getModels(c
 registerFiles(route, { json, body, broadcast, addNote: (thread, text, files) => addMessage(thread, 'system', 'note', text, null, files) });
 
 registerPro(route, { json, q, DATA_DIR });
+registerExtras(route, { json, body, postToThread });
+registerExtras2(route, { json, body, postToThread, pveGet, pveConfig });
+registerExtras3(route, { json, body });
+registerCode2(route, { json, body, postToThread });
 
 // Restart the service once no bot is mid-run (a restart kills running bots, including one that asked for it).
 // Needs a sudoers rule letting this user run `systemctl restart nimbus`.
@@ -674,9 +705,17 @@ const PREVIEW_BASE = Number(process.env.NIMBUS_PREVIEW_PORT || 8900);
 Code.setPreviewProxy(async (target) => {
   const handler = (req, res) => {
     if (!loggedIn(req)) { res.writeHead(401, { 'content-type': 'text/plain' }); return res.end('Log in to Nimbus first.'); }
-    const up = http.request({ host: '127.0.0.1', port: target(), path: req.url, method: req.method, headers: { ...req.headers, host: `127.0.0.1:${target()}` } }, (r) => {
+    // Nimbus's probe (code2.js) reports the page's console errors and failed requests to the code panel, and lets you pick an element.
+    if (req.url === '/__nimbus_probe.js') { res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' }); return res.end(PROBE); }
+    const up = http.request({ host: '127.0.0.1', port: target(), path: req.url, method: req.method, headers: { ...req.headers, host: `127.0.0.1:${target()}`, 'accept-encoding': 'identity' } }, (r) => {
       const h = { ...r.headers }; delete h['x-frame-options']; delete h['content-security-policy'];
-      res.writeHead(r.statusCode, h); r.pipe(res);
+      if (!/text\/html/.test(h['content-type'] || '') || h['content-encoding']) { res.writeHead(r.statusCode, h); return r.pipe(res); }
+      const chunks = []; r.on('data', (d) => chunks.push(d));
+      r.on('end', () => {
+        let html = Buffer.concat(chunks).toString('utf8'); const tag = '<script src="/__nimbus_probe.js"></script>';
+        html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + tag) : tag + html;
+        delete h['content-length']; delete h['transfer-encoding']; res.writeHead(r.statusCode, h); res.end(html);
+      });
     });
     up.on('error', () => { if (!res.headersSent) { res.writeHead(502, { 'content-type': 'text/html' }); res.end('<body style="font:15px system-ui;padding:24px;color:#888">The app isn’t answering yet. It may still be starting; this page reloads in a moment.<script>setTimeout(()=>location.reload(),2000)</script>'); } else res.end(); });
     req.pipe(up);
@@ -933,6 +972,22 @@ route('POST', '/api/approvals/:id', async (req, res, p) => {
   json(res, 200, { ok: true });
 });
 
+// Delete a file you sent (one, or all of a message's): removed from the chat, from data/uploads, and from
+// the copies bots got in their chat folders. A message left with no text and no files is deleted too.
+route('DELETE', '/api/messages/:id/files/:fid', (req, res, p) => {
+  const m = q('SELECT * FROM messages WHERE id=?').get(Number(p.id));
+  if (!m) return json(res, 404, { error: 'not found' });
+  if (m.author !== 'user') return json(res, 403, { error: 'You can only delete files you sent' });
+  if (m.queued) return json(res, 409, { error: 'The bot hasn’t started on this message yet. Take the message back first, or wait until it starts.' });
+  let files = []; try { files = JSON.parse(m.files || '[]'); } catch {}
+  const gone = files.filter((f) => p.fid === 'all' || f.id === p.fid);
+  if (!gone.length) return json(res, 404, { error: 'No such file in this message' });
+  deleteUploads(gone.map((f) => f.id), TH.threadBot);
+  const left = files.filter((f) => !gone.includes(f));
+  if (!left.length && !String(m.body || '').trim()) { q('DELETE FROM messages WHERE id=?').run(m.id); broadcast('message_delete', { id: m.id, thread: m.thread }); }
+  else { q('UPDATE messages SET files=? WHERE id=?').run(JSON.stringify(left), m.id); broadcast('message_update', q('SELECT * FROM messages WHERE id=?').get(m.id)); }
+  json(res, 200, { ok: true, deleted: gone.length });
+});
 // Redact a message, or just a selected part of it. The text is replaced with [REDACTED] in the chat,
 // and the same text is scrubbed from saved prompts, approval requests, other messages and the bots'
 // Claude Code transcripts (~/.claude/projects), so it isn't kept anywhere on this server.
@@ -1019,7 +1074,7 @@ const SETTINGS = [
   { key: 'pve_host' }, { key: 'pve_token_id' }, { key: 'pve_token_secret', secret: true },
   { key: 'backup_target' }, { key: 'auto_compact_pct', env: 'NIMBUS_AUTO_COMPACT_PCT' },
   { key: 'thread_limit' }, { key: 'usage_guard_pct' },
-  { key: 'trusted_bots', env: 'NIMBUS_TRUSTED_BOTS' }, { key: 'sandbox', env: 'NIMBUS_SANDBOX' }
+  { key: 'trusted_proxies', env: 'NIMBUS_TRUSTED_PROXIES' }, { key: 'trusted_bots', env: 'NIMBUS_TRUSTED_BOTS' }, { key: 'sandbox', env: 'NIMBUS_SANDBOX' }
 ];
 route('GET', '/api/settings', (req, res) => {
   const out = {};
@@ -1034,6 +1089,7 @@ route('PUT', '/api/settings', async (req, res) => {
     if (s.key === 'auto_compact_pct' && v && !(Number(v) >= 0 && Number(v) <= 95)) return json(res, 400, { error: 'Auto-compact must be 0 (off) to 95' });
     if (s.key === 'thread_limit' && v && !/^[123]$/.test(v)) return json(res, 400, { error: 'Threads at once per bot: 1, 2 or 3' });
     if (s.key === 'usage_guard_pct' && v && !(Number(v) >= 0 && Number(v) <= 90)) return json(res, 400, { error: 'Usage guard: 0 to 90 (% of the 5-hour limit left)' });
+    if (s.key === 'trusted_proxies' && v && !/^[\d.:a-f]+([\s,]+[\d.:a-f]+)*$/i.test(v)) return json(res, 400, { error: 'Trusted proxies: IP addresses separated by commas, e.g. 192.168.1.2' });
     if (s.key === 'trusted_bots' && v && !/^\d+([\s,]+\d+)*$/.test(v)) return json(res, 400, { error: 'Trusted bots: bot numbers separated by commas, e.g. 3' });
     if (s.key === 'sandbox' && v && !/^(off|all|-?\d+)([\s,]+-?\d+)*$/i.test(v.replace(/^all\b/i, 'all'))) return json(res, 400, { error: 'Sandbox: off, all, bot numbers (e.g. 5,9), or all,-3 for every bot but #3' });
     if (s.key === 'backup_target' && v && !/^[\w.-]+@[\w.-]+:\/[^\s]*$/.test(v)) return json(res, 400, { error: 'Backup target should look like user@host:/path' });
@@ -1405,14 +1461,18 @@ route('POST', '/api/hook/pretool', async (req, res) => {
   if (!run) return json(res, 200, { decision: 'allow' });
   const bot = parseBot(q('SELECT * FROM bots WHERE id=?').get(run.bot_id));
   const guard = guardNimbus(tool, input, bot.id);
+  if (!guard) journalBefore(run, tool, input);
   if (guard) return json(res, 200, { decision: 'deny', reason: `Nimbus: ${guard}. Bots can't read Nimbus's private data or change its files. Don't retry; tell the user if you need it.` });
   const gated = bot.approval_rules.some((r) => ruleMatches(r, tool, input)) && !bot.allow_rules.some((r) => ruleMatches(r, tool, input))
     && !(bot.allow_rules.includes('@self-email') && isSelfEmail(tool, input));
   if (!gated) return json(res, 200, { decision: 'allow' });
+  if (planAllows(run.thread, tool, input)) return json(res, 200, { decision: 'allow' }); // part of a plan you approved
+  const auto = await autoApprove(bot, run, tool, input).catch(() => ({ allow: false })); // Settings → Auto-approve
+  if (auto.allow) return json(res, 200, { decision: 'allow' });
   const ins = q('INSERT INTO approvals (run_id, bot_id, thread, tool, input) VALUES (?,?,?,?,?)').run(run.id, bot.id, run.thread, tool, redact(JSON.stringify(input || {})));
   const approvalId = Number(ins.lastInsertRowid);
   const pattern = tool === 'Bash' ? commandPrefix(String(input?.command || '')).trim() + ' …' : null;
-  addMessage(run.thread, bot.id, 'approval', { approvalId, tool, input, status: 'pending', pattern }, run.id);
+  addMessage(run.thread, bot.id, 'approval', { approvalId, tool, input, status: 'pending', pattern, ...(auto.why ? { why: auto.why } : {}) }, run.id);
   markTraceWaiting(run.id, tool, true);
   broadcast('approvals_changed', {});
   json(res, 200, { decision: 'ask', approvalId });
@@ -1469,6 +1529,7 @@ route('POST', '/api/hook/ask', async (req, res) => {
   if (chain.length > MAX_ASK_DEPTH) return json(res, 429, { error: 'Too many bots are already waiting on each other. Answer with what you have.' });
   const thread = TH.builtIn(target.id, 'inbox');
   addMessage(thread, 'system', 'note', `📨 ${from.name}: ${String(text).trim()}`);
+  broadcast('handoff', { from: from.id, to: target.id });
   const runId = runBot({ botId: target.id, thread, source: from.name, parentRun: Number(fromRun), depth: chain.length,
     prompt: `Message from ${from.name}, another Nimbus bot (not the user):\n\n${String(text).trim()}\n\n${wait ? `Your reply is sent back to ${from.name}, so answer what it needs.` : `${from.name} isn't waiting for a reply; act on this if it's in your area.`}` });
   if (!wait) return json(res, 200, { queued: true, runId, to: target.name });
@@ -1507,13 +1568,23 @@ db.exec('CREATE TABLE IF NOT EXISTS auth_sessions (token TEXT PRIMARY KEY, creat
 if (!q('PRAGMA table_info(auth_sessions)').all().some((c) => c.name === 'email')) db.exec("ALTER TABLE auth_sessions ADD COLUMN email TEXT DEFAULT ''");
 db.exec('CREATE TABLE IF NOT EXISTS users (email TEXT PRIMARY KEY, salt TEXT NOT NULL, pw_hash TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()))');
 const SESSION_DAYS = 90;
+// Expired sign-ins are removed (otherwise only signing out deletes one).
+const pruneSessions = () => { try { q('DELETE FROM auth_sessions WHERE created_at <= unixepoch() - ?').run(SESSION_DAYS * 86400); } catch (e) { console.error('session cleanup', e.message); } };
+pruneSessions(); setInterval(pruneSessions, 6 * 3600_000).unref();
 const hashPassword = (pw, salt) => crypto.scryptSync(String(pw), salt, 64).toString('hex');
 const hash = (s) => crypto.createHash('sha256').update(String(s)).digest();
 const failures = new Map(); // ip -> { n, until }
+// The address a request really came from. Behind a reverse proxy (Nginx Proxy Manager) every device would look like
+// the proxy, so one person's wrong passwords would lock everyone out: for this host and the trusted_proxies setting,
+// the last address the proxy added to X-Forwarded-For is used (earlier ones can be made up by the client).
 function clientIp(req) {
-  const direct = req.socket.remoteAddress || '';
-  const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(direct);
-  return local && req.headers['x-forwarded-for'] ? req.headers['x-forwarded-for'].split(',')[0].trim() : direct;
+  const bare = (a) => String(a || '').trim().replace(/^::ffff:/, '');
+  const direct = bare(req.socket.remoteAddress);
+  const trusted = new Set(['127.0.0.1', '::1', ...String(getSetting('trusted_proxies', 'NIMBUS_TRUSTED_PROXIES') || '').split(/[\s,]+/).filter(Boolean)]);
+  if (!trusted.has(direct) || !req.headers['x-forwarded-for']) return direct;
+  const hops = String(req.headers['x-forwarded-for']).split(',').map(bare).filter(Boolean);
+  while (hops.length > 1 && trusted.has(hops[hops.length - 1])) hops.pop();
+  return hops[hops.length - 1] || direct;
 }
 function cookie(req, name) {
   const m = (req.headers.cookie || '').match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
@@ -1538,6 +1609,11 @@ function newSessionCookie(req, email = '') {
   q('INSERT INTO auth_sessions (token, email) VALUES (?,?)').run(token, email);
   return `nimbus_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86400}${isHttps(req) ? '; Secure' : ''}`;
 }
+// The app's pages may run only Nimbus's own script files: injected <script> tags, onclick="…" and eval are refused,
+// so a slip in escaping can't become code. Bot web pages load from ?sandbox URLs with their own rules (see /api/files).
+const APP_CSP = ["default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com", "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: blob: https:", "media-src 'self' data: blob:", "connect-src 'self' ws: wss:", "frame-src 'self' blob: data: http: https:", "worker-src 'self' blob:",
+  "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'self'"].join('; ');
 const LOGIN_PAGE = fs.readFileSync(path.join(PUBLIC, 'login.html'));
 
 route('POST', '/api/login', async (req, res) => {
@@ -1704,7 +1780,7 @@ function adminAuth(req) {
     && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && !req.headers['x-forwarded-for'];
 }
 
-const OPEN_PATHS = new Set(['/nimbus.webp', '/login', '/api/login', '/api/login/mfa', '/api/signup', '/api/auth-methods', '/icon.svg', '/manifest.webmanifest', '/styles.css']);
+const OPEN_PATHS = new Set(['/nimbus.webp', '/login', '/api/login', '/api/login/mfa', '/api/signup', '/api/auth-methods', '/icon.svg', '/status', '/icon-32.png', '/icon-180.png', '/icon-192.png', '/icon-512.png', '/manifest.webmanifest', '/styles.css']);
 function checkAuth(req, res, url) {
   if (url.pathname.startsWith('/api/hook/') || OPEN_PATHS.has(url.pathname) || adminAuth(req) || loggedIn(req)) {
     // Mutating API calls must be JSON: blocks form-based cross-site requests.
@@ -1789,7 +1865,7 @@ async function handle(req, res) {
     if (!file.startsWith(PUBLIC) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(PUBLIC, 'index.html');
     // The browser still checks every time (no-cache) but gets a tiny "not changed" answer, and text goes out compressed.
     const st = fs.statSync(file), etag = `"${st.size.toString(36)}-${Math.round(st.mtimeMs).toString(36)}"`;
-    const head = { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'x-frame-options': 'SAMEORIGIN', 'content-security-policy': "frame-ancestors 'self'", 'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin', 'cache-control': 'no-cache', etag, vary: 'accept-encoding' };
+    const head = { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'x-frame-options': 'SAMEORIGIN', 'content-security-policy': APP_CSP, 'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin', 'cache-control': 'no-cache', etag, vary: 'accept-encoding' };
     if (req.headers['if-none-match'] === etag) { res.writeHead(304, head); return res.end(); }
     if (/\.(html|js|css|svg|json|webmanifest)$/.test(file) && /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''))) {
       let z = zipped.get(file);
@@ -1800,10 +1876,20 @@ async function handle(req, res) {
     res.writeHead(200, { ...head, 'content-length': st.size });
     fs.createReadStream(file).pipe(res);
   } catch (e) {
-    if (!res.headersSent) json(res, 500, { error: e.message });
+    // Errors meant for you (thrown with a status) are shown as they are; anything unexpected gets a plain
+    // message, and the details go to the log instead of the screen.
+    if (res.headersSent) return;
+    if (e.status) return json(res, e.status, { error: e.message });
+    if (e instanceof SyntaxError) return json(res, 400, { error: 'That request wasn’t valid JSON' });
+    if (e.message === 'too large') return json(res, 413, { error: 'That’s too large to send' });
+    console.error(req.method, String(req.url).split('?')[0], e.stack || e);
+    json(res, 500, { error: 'Something went wrong on the server. The details are in the Nimbus log.' });
   }
 }
 const onUpgrade = (req, socket, head) => { proxyDesktopUpgrade(req, socket, head).catch(() => socket.destroy()); };
+// A background job that fails (a timer, a hook, a lost connection) is logged instead of taking the server down
+// with every bot's run in it; systemd still restarts it after real crashes.
+process.on('unhandledRejection', (e) => console.error('unhandled rejection:', e?.stack || e));
 const server = http.createServer(handle);
 server.on('upgrade', onUpgrade);
 

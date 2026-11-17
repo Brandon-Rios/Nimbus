@@ -13,6 +13,16 @@ background, and they stop and ask before anything risky.
 - Themes, accent color, light/dark
 - Email + password accounts with optional two-factor codes; reach it from your phone through Twingate
 - Android app (build it yourself, see [android/README.md](android/README.md)): dictation, file uploads, notifications
+- Threads and projects per bot, an Inbox for requests between bots, and a Routines thread
+- Files and live documents: attach or get Word/Excel/PowerPoint/PDF files with previews and versions; live docs the
+  bot fills while you watch and can edit, comment on and export
+- **Nimbus Code**: a project per Git repo, one branch per chat, per-turn undo, diffs, tests (optionally after every turn),
+  app preview with console errors and an element picker, terminal, file editor, search (Ctrl+Shift+F, Ctrl+P),
+  history/blame/revert, a merge-conflict helper, lint problems, pull requests and GitHub issues as tasks
+- AI tools: smart auto-approve (free rules, optional cheap check that explains why it asks), Rewind a chat,
+  weekly self-review, a shared skills library, custom MCP connectors, voice mode and camera
+- Automation: watchdog for your services, playbooks, scheduled messages, hand-offs, team memory, per-bot budgets
+- Homelab tools: backups view, IP map, change journal (undo for file edits), plan-first mode, log search, model routing
 - Voice dictation transcribed on your own server (whisper.cpp), file and image attachments, bots that message each other
 
 No npm packages. Needs only **Node 22.13+** and **Claude Code**.
@@ -106,6 +116,11 @@ journalctl -u nimbus -f      # logs
 | `NIMBUS_WINDOW_BUDGET_USD` | — | If set, the sidebar meter shows % of this per 5 hours |
 | `NIMBUS_RUN_TIMEOUT_MIN` | `45` | Kill a run that takes longer than this |
 | `CLAUDE_BIN` | `claude` | Path to Claude Code |
+| `NIMBUS_HTTPS_PORT` | `8443` | HTTPS port with a self-signed certificate (`0` = off) |
+| `NIMBUS_TRUSTED_PROXIES` | — | Reverse proxies in front of Nimbus (IPs, comma-separated), so login limits count the real device |
+| `NIMBUS_TRUSTED_BOTS` | — | Bot numbers allowed to read Nimbus's data and change its code |
+| `NIMBUS_SANDBOX` | — | Run bots in a bubblewrap sandbox: `all`, bot numbers, or `all,-3` |
+| `NIMBUS_HOOK_TOKEN` | random | Token bots use for `/api/hook/*` (set it only for tests) |
 | `TZ` | system | Time zone routines run in, e.g. `America/New_York` |
 
 ## How it works
@@ -171,6 +186,13 @@ For Gmail, Calendar, GitHub, Slack and so on, add MCP servers to Claude Code on 
 To give one bot a code repo, put the path in its instructions ("Work in /home/me/myapp"),
 or clone the repo inside its folder.
 
+## Developing
+
+- `npm test` starts a throwaway copy on port 8795 with an empty data folder and checks login, lockout, hooks, files,
+  redact, skills and settings over the API (about 10 seconds, no Claude usage). Add a check when you add a feature.
+- [docs/API.md](docs/API.md) lists every API route; regenerate it with `node bin/api-docs.mjs`.
+- Try changes on a copy first: `PORT=8794 NIMBUS_DATA=/tmp/copy NIMBUS_PASSWORD=… node server.js`.
+
 ## Privacy
 
 - Whether your conversations may be used to train Claude is an **account setting**: claude.ai → Settings →
@@ -184,3 +206,9 @@ or clone the repo inside its folder.
 - Approval rules are a safety net, not a sandbox. Review the defaults in each bot's settings.
 - Don't open port 8787 to the internet; let Twingate be the only way in. The password is a second lock.
 - Failed logins are rate-limited (8 tries, then 15 minutes). Logins last 90 days per device; **Log out** in the sidebar ends one.
+- Behind a reverse proxy (Nginx Proxy Manager, Caddy…), add its address to **Trusted proxies** in Server settings;
+  otherwise every device looks like the proxy and one device's wrong passwords lock everyone out.
+- App pages may only run Nimbus's own script files (Content-Security-Policy). Web pages bots make open from a
+  sandboxed address, where their scripts run but can't reach Nimbus or your session.
+- Skills a bot writes are only used by that bot until you share them in Settings → Skills.
+- The Android app remembers Nimbus's self-signed certificate the first time and warn if it changes.

@@ -28,6 +28,7 @@ import javax.net.ssl.HttpsURLConnection;
  * bot replies while the app isn't open. Runs as a foreground service so Android keeps it connected.
  */
 public class EventService extends Service {
+    private long widgetAt = 0;
     private static final String CH_STATUS = "status", CH_ALERTS = "alerts";
     private volatile boolean running = false;
     private Thread thread;
@@ -110,6 +111,10 @@ public class EventService extends Service {
 
     private void handle(String event, String data) {
         try {
+            // Home-screen widget: refresh on approvals and watchdog changes, at most every 10 seconds.
+            if ((event.equals("approvals_changed") || event.equals("extras") || event.equals("status")) && System.currentTimeMillis() - widgetAt > 10000) {
+                widgetAt = System.currentTimeMillis(); StatusWidget.refresh(this);
+            }
             if (event.equals("state_changed")) { loadBotNames(); return; }
             if (!event.equals("message")) return;
             JSONObject m = new JSONObject(data);

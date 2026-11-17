@@ -78,7 +78,9 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(Intent.ACTION_VIEW, u));
                 return true;
             }
+            @Override public void onPageStarted(WebView v, String url, android.graphics.Bitmap icon) { pageHost = Uri.parse(url).getHost(); }
             @Override public void onPageFinished(WebView v, String url) {
+                pageHost = Uri.parse(url).getHost();
                 CookieManager.getInstance().flush();
                 deliverShare();
                 if (CookieManager.getInstance().getCookie(Trust.serverUrl(MainActivity.this)) != null) startEvents();
@@ -89,16 +91,17 @@ public class MainActivity extends Activity {
         });
         web.setWebChromeClient(new WebChromeClient() {
             @Override public void onPermissionRequest(PermissionRequest req) {
-                // Only the Nimbus page asks for the mic (dictation). Grant it once Android allows recording.
+                // Only the Nimbus page asks: the mic (dictation, voice mode) and the camera (photos, voice mode).
                 boolean ours = req.getOrigin() != null && req.getOrigin().getHost() != null
                         && req.getOrigin().getHost().equals(Uri.parse(Trust.serverUrl(MainActivity.this)).getHost());
                 if (!ours) { req.deny(); return; }
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                    req.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
-                } else {
-                    pendingMic = req;
-                    requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+                java.util.List<String> need = new java.util.ArrayList<>();
+                for (String r : req.getResources()) {
+                    if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r) && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.RECORD_AUDIO);
+                    if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r) && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.CAMERA);
                 }
+                if (need.isEmpty()) grantAllowed(req);
+                else { pendingMic = req; requestPermissions(need.toArray(new String[0]), REQ_MIC); }
             }
             @Override public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams p) {
                 if (pendingFiles != null) pendingFiles.onReceiveValue(null);
@@ -209,10 +212,19 @@ public class MainActivity extends Activity {
         try { startForegroundService(i); } catch (Exception ignored) {}
     }
 
+    // Grant what the page asked for that Android allows; deny if nothing is allowed.
+    private void grantAllowed(PermissionRequest req) {
+        java.util.List<String> ok = new java.util.ArrayList<>();
+        for (String r : req.getResources()) {
+            if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r) && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) ok.add(r);
+            if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r) && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) ok.add(r);
+        }
+        if (ok.isEmpty()) req.deny(); else req.grant(ok.toArray(new String[0]));
+    }
+
     @Override public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
         if (code == REQ_MIC && pendingMic != null) {
-            if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) pendingMic.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
-            else pendingMic.deny();
+            grantAllowed(pendingMic);
             pendingMic = null;
         }
     }
@@ -237,10 +249,14 @@ public class MainActivity extends Activity {
     @Override protected void onPause() { super.onPause(); visible = false; web.onPause(); CookieManager.getInstance().flush(); }
 
     /** Called from the Nimbus page's user menu ("App: server address"), which only shows inside this app. */
+    /** Host of the page showing now; the bridge answers only Nimbus's own pages (not Google's sign-in page). */
+    private volatile String pageHost = "";
+    private boolean ownPage() { String h = Uri.parse(Trust.serverUrl(this)).getHost(); return h != null && h.equals(pageHost); }
     private class Bridge {
-        @android.webkit.JavascriptInterface public void changeServer() { runOnUiThread(() -> askForUrl("Your Nimbus address:")); }
+        @android.webkit.JavascriptInterface public void changeServer() { if (!ownPage()) return; runOnUiThread(() -> askForUrl("Your Nimbus address:")); }
         /** Downloads (exports, file cards): the page fetches the file and hands it over; saved to Downloads, then opened. */
         @android.webkit.JavascriptInterface public void saveFile(String name, String mime, String b64) {
+            if (!ownPage()) return;
             try {
                 byte[] data = android.util.Base64.decode(b64, android.util.Base64.DEFAULT);
                 android.content.ContentValues v = new android.content.ContentValues();

@@ -57,7 +57,7 @@ export function startScheduler() {
     const due = q('SELECT * FROM routines WHERE enabled=1').all().filter((r) => cronMatches(r.cron, now));
     if (!due.length) return;
     // Guardrail: when the plan's 5-hour limit is nearly used up, skip routines so it's left for you.
-    const plan = await getPlanUsage();
+    const plan = await getPlanUsage().catch(() => ({ ok: false }));
     const fiveHour = plan.ok ? plan.windows.find((w) => w.label === '5-hour limit')?.used : null;
     for (const r of due) {
       q('UPDATE routines SET last_run=unixepoch() WHERE id=?').run(r.id);
@@ -65,7 +65,8 @@ export function startScheduler() {
         addMessage(builtIn(r.bot_id, 'routines'), 'system', 'note', `Skipped a scheduled routine: your Claude plan's 5-hour limit is ${Math.round(fiveHour)}% used (guardrail: ${GUARD_PCT}%).`);
         continue;
       }
-      runBot({ botId: r.bot_id, thread: builtIn(r.bot_id, 'routines'), prompt: r.prompt, source: 'schedule', quiet: !!r.quiet });
+      try { runBot({ botId: r.bot_id, thread: builtIn(r.bot_id, 'routines'), prompt: r.prompt, source: 'schedule', quiet: !!r.quiet }); }
+      catch (e) { console.error('routine', r.id, e.message); }
     }
   }, 15000).unref();
 }

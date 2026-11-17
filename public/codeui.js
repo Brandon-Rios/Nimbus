@@ -139,7 +139,11 @@ export async function codeProjectModal(p) {
     <label class="field">Instructions (optional)<textarea id="cp-ins" rows="3" placeholder="Stack, rules, how to run it. Every bot here reads this.">${X.esc(p.instructions)}</textarea></label>
     <details class="field cp-adv"><summary>Tests and preview (found automatically)</summary>
       <label class="field">Test command<input id="cp-test" value="${X.esc(p.test_cmd || '')}" placeholder="npm test, pytest… (blank = detect)"></label>
-      <label class="field">Preview command<input id="cp-prev" value="${X.esc(p.preview_cmd || '')}" placeholder="npm run dev (uses $PORT; blank = detect)"></label></details>
+      <label class="field">Preview command<input id="cp-prev" value="${X.esc(p.preview_cmd || '')}" placeholder="npm run dev (uses $PORT; blank = detect)"></label>
+      <label class="field">Setup for new branches<input id="cp-setup" placeholder="npm ci, pip install -r requirements.txt… (blank = detect)"><span class="hint">Runs in each new chat’s branch folder so tests and preview work straight away.</span></label>
+      <label class="field">Lint / type-check command<input id="cp-lint" placeholder="npx eslint -f unix . (blank = detect)"></label>
+      <label class="field cp-check"><input type="checkbox" id="cp-autotest"> Run the tests after every turn that changes files (free, runs here)</label>
+      <label class="field">Secrets and settings for this project<textarea id="cp-env" rows="3" placeholder="DATABASE_URL=postgres://…&#10;API_KEY=…"></textarea><span class="hint" id="cp-envhint">One NAME=value per line. Given to tests, preview, setup and the terminal. Never shown again after saving.</span></label></details>
     <div class="modal-foot">
       ${isNew ? '' : '<button class="btn danger left" id="cp-del">Delete project</button>'}
       <button class="btn" data-close>Cancel</button>
@@ -150,6 +154,15 @@ export async function codeProjectModal(p) {
   const $ = (s) => el.querySelector(s);
   const draw = () => { $('#cp-picks').innerHTML = X.S.data.bots.map((b) => `<label class="pick ${members.has(b.id) ? 'on' : ''}"><input type="checkbox" data-cpm="${b.id}" ${members.has(b.id) ? 'checked' : ''}>${X.avatar(b, 28)}<span>${X.esc(b.name)}</span></label>`).join(''); };
   draw(); slug();
+  if (!isNew) X.api(`/api/code2/project/${p.id}/settings`).then((st) => {
+    $('#cp-setup').value = st.setup_cmd; $('#cp-lint').value = st.lint_cmd; $('#cp-autotest').checked = st.auto_test;
+    if (st.env.length) $('#cp-envhint').innerHTML = `Saved: ${st.env.map((k) => `<code>${X.esc(k)}</code>`).join(' ')}. Add NAME=value lines to set or change; NAME= (empty) removes one. Values are never shown.`;
+  }).catch(() => {});
+  const saveCode2 = async (pid) => {
+    const env = {};
+    for (const l of $('#cp-env').value.split('\n')) { const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/.exec(l); if (m) env[m[1]] = m[2].trim() === '' ? null : m[2].trim(); }
+    await X.api(`/api/code2/project/${pid}/settings`, { method: 'PUT', body: { setup_cmd: $('#cp-setup').value.trim(), lint_cmd: $('#cp-lint').value.trim(), auto_test: $('#cp-autotest').checked, env } });
+  };
   $('#cp-name').addEventListener('input', slug);
   el.addEventListener('change', (e) => { if (e.target.dataset.cpm) { const id = Number(e.target.dataset.cpm); e.target.checked ? members.add(id) : members.delete(id); draw(); } });
   el.addEventListener('click', async (e) => {
@@ -181,8 +194,8 @@ export async function codeProjectModal(p) {
         try {
           if (isNew) {
             const r = await X.api('/api/projects', { method: 'POST', body: { ...body, code: true, source: src, url: $('#cp-url').value.trim(), folder: $('#cp-folder').value } });
-            X.closeModal(); await X.refreshState(); newCodeThread(r.id);
-          } else { await X.api(`/api/projects/${p.id}`, { method: 'PATCH', body }); X.closeModal(); X.refreshState(); }
+            await saveCode2(r.id).catch(() => {}); X.closeModal(); await X.refreshState(); newCodeThread(r.id);
+          } else { await X.api(`/api/projects/${p.id}`, { method: 'PATCH', body }); await saveCode2(p.id); X.closeModal(); X.refreshState(); }
         } finally { btn.disabled = false; btn.textContent = isNew ? 'Create project' : 'Save'; }
       }
     } catch (err) { X.toast(err.message); }
@@ -192,7 +205,9 @@ export async function codeProjectModal(p) {
 // ---------- the code panel ----------
 const pane = () => document.getElementById('codepane');
 // Workspace: several tools tiled side by side (terminal, changes, code, preview), like an IDE. Saved per device.
-const TILES = [['about', 'Overview'], ['terminal', 'Terminal'], ['changes', 'Changes'], ['files', 'Files'], ['preview', 'Browser'], ['commits', 'Commits'], ['tests', 'Tests']];
+// Extra tools from code2.js (pull request, issues, search, problems) plug in here.
+export const CODE_EXT = { tiles: [], body: null, mount: null, about: null, conflict: null, blame: null };
+const TILES = [['about', 'Overview'], ['terminal', 'Terminal'], ['changes', 'Changes'], ['files', 'Files'], ['preview', 'Browser'], ['commits', 'Commits'], ['tests', 'Tests'], ['pr', 'Pull request'], ['issues', 'Issues'], ['search', 'Search'], ['problems', 'Problems']];
 const WSC = { on: true, tiles: (localStorage.codeTiles2 || '').split(',').filter((t) => TILES.some(([k]) => k === t)), max: null };
 // Any other bot chat gets a workspace too: environment, terminal and files in the bot's own folder, the changes it made in this chat, its browser.
 const BTILES = [['env', 'Environment'], ['terminal', 'Terminal'], ['bchanges', 'Changes'], ['browser', 'Browser'], ['files', 'Files']];
@@ -284,7 +299,7 @@ function renderPane() {
   const termNode = keepTerm ? el.querySelector('.cp-term') : null;
   const adds = i.changes.reduce((s, c) => s + c.add, 0), dels = i.changes.reduce((s, c) => s + c.del, 0);
   if (!CP.tab) CP.tab = i.changes.length ? 'changes' : 'about';
-  const tabs = [['about', 'About'], ['files', 'Files'], ['changes', `Changes${i.changes.length ? ` <i>${i.changes.length}</i>` : ''}`], ['commits', 'Commits'], ['tests', `Tests${i.test.last && !i.test.last.running ? (i.test.last.ok ? ' <i class="ok">✓</i>' : ' <i class="bad">✗</i>') : ''}`], ['preview', `Browser${i.preview.running ? ' <i class="ok">●</i>' : ''}`], ['terminal', 'Terminal']];
+  const tabs = [['about', 'About'], ['files', 'Files'], ['changes', `Changes${i.changes.length ? ` <i>${i.changes.length}</i>` : ''}`], ['commits', 'Commits'], ['tests', `Tests${i.test.last && !i.test.last.running ? (i.test.last.ok ? ' <i class="ok">✓</i>' : ' <i class="bad">✗</i>') : ''}`], ['preview', `Browser${i.preview.running ? ' <i class="ok">●</i>' : ''}`], ['terminal', 'Terminal'], ['pr', 'Pull request'], ['issues', 'Issues'], ['search', 'Search'], ['problems', 'Problems']];
   el.innerHTML = `
     <div class="cp-head"><button class="icon-btn cp-back" data-cp="close" aria-label="Back to chat">${X.ICON.chevron}</button>${CODE_ICON}<b title="${X.esc(i.project.path)}">${X.esc(i.project.name)}</b>
       ${i.webUrl ? `<a class="cp-link" href="${X.esc(i.webUrl)}" target="_blank" rel="noopener" title="Open on GitHub">GitHub ↗</a>` : ''}
@@ -296,12 +311,14 @@ function renderPane() {
       <button class="btn small" data-cp="diff-working" ${i.changes.length ? '' : 'disabled'}>View changes${i.changes.length ? ` <span class="add">+${adds}</span> <span class="del">−${dels}</span>` : ''}</button>
       ${i.ownBranch ? `<button class="btn small" data-cp="diff-branch">Whole branch</button><button class="btn small" data-cp="merge" ${i.changes.length || !i.aheadOfBase ? 'disabled' : ''} title="${i.changes.length ? 'Commit first' : i.aheadOfBase ? `Merge into ${X.esc(i.base)}` : 'Nothing to merge yet'}">Merge into ${X.esc(i.base)}</button>` : ''}
       ${i.remote ? `<button class="btn small" data-cp="push">Push</button>` : ''}
-      ${i.webUrl && i.ownBranch ? `<a class="btn small" href="${X.esc(i.webUrl)}/compare/${enc(i.base)}...${enc(i.branch)}?expand=1" target="_blank" rel="noopener">Open PR ↗</a>` : ''}
+      ${i.webUrl && i.ownBranch ? `<button class="btn small" data-cp2="pr-tile">Pull request</button>` : ''}
+      <button class="btn small" data-cp2="history">History</button>${i.ownBranch ? '<button class="btn small" data-cp2="another" title="Run the same task again on a second branch and compare">Try another way</button>' : ''}
     </div>
     ${WS.on ? gridHtml(i, tabs) : `<div class="cp-tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" class="${CP.tab === k ? 'on' : ''}" data-cptab="${k}">${l}</button>`).join('')}</div>
     <div class="cp-body">${tabBody(i)}</div>`}`;
   if (shown('files')) { if (filesNode) el.querySelector('.cp-files-view').replaceWith(filesNode); else FV.mount(el.querySelector('.cp-files-view')); }
   else FV.reset();
+  CODE_EXT.mount?.(el, i);
   if (shown('terminal')) { if (termNode) el.querySelector('.cp-term').replaceWith(termNode); else startTerm(); } else if (CP.term) stopTerm();
 }
 // About box, like the right side of a GitHub repo page. GitHub numbers when the repo is linked, local ones otherwise.
@@ -403,7 +420,7 @@ function gridHtml(i, tabs) {
       <div class="cp-body">${tabBody(i, k)}</div></section>`).join('') || '<p class="muted cp-empty">Add a tool above.</p>'}</div>`;
 }
 function tabBody(i, tab = CP.tab) {
-  if (tab === 'about') return aboutHtml(i);
+  if (tab === 'about') return (CODE_EXT.about?.(i) || '') + aboutHtml(i);
   if (tab === 'env') return '<div class="ws-env"><p class="muted">Loading…</p></div>';
   if (tab === 'bchanges') return bchangesHtml();
   if (tab === 'browser') return '<div class="ws-br"></div>';
@@ -438,7 +455,7 @@ function tabBody(i, tab = CP.tab) {
       <iframe class="cp-frame" src="${url}" title="App preview"></iframe><details class="cp-log"><summary>Output</summary><pre class="cp-out">${X.esc(pv.out)}</pre></details>`;
   }
   if (tab === 'terminal') return '<div class="cp-term"></div><p class="hint">A shell in this task’s folder, running as the Nimbus user.</p>';
-  return '';
+  return CODE_EXT.body?.(tab, i) || '';
 }
 
 document.addEventListener('click', (e) => {
@@ -579,7 +596,7 @@ const FV = {
       return;
     }
     if (!this.el.querySelector('.fv-ed')) this.el.innerHTML = `<div class="fv-bar"><button class="icon-btn fv-back" data-fv-back title="All files" aria-label="All files">${X.ICON.chevron}</button><b class="fv-name mono"></b><i class="fv-dot" hidden title="Unsaved"></i>
-      <label class="fv-follow" title="Open each file the bot edits"><input type="checkbox" data-fv-follow ${this.follow ? 'checked' : ''}> Follow</label><button class="btn small primary" data-fv-save disabled>Save</button></div>
+      <label class="fv-follow" title="Open each file the bot edits"><input type="checkbox" data-fv-follow ${this.follow ? 'checked' : ''}> Follow</label>${CP.bot ? '' : '<button class="btn small" data-fv-blame title="Who changed each line, and when">Blame</button><button class="btn small" data-fv-hist title="Commits that changed this file">History</button>'}<button class="btn small primary" data-fv-save disabled>Save</button></div>
       <div class="fv-note" hidden></div><div class="fv-ed"></div>`;
     this.el.querySelector('.fv-name').textContent = this.file; this.el.querySelector('.fv-name').title = this.file;
     this.mark();
@@ -631,6 +648,22 @@ document.addEventListener('click', async (e) => {
 });
 document.addEventListener('change', (e) => { if (e.target.matches?.('[data-fv-follow]')) { FV.follow = e.target.checked; localStorage.codeFollow = FV.follow ? '1' : '0'; } });
 document.addEventListener('input', (e) => { if (e.target.classList?.contains('fv-q')) { FV.q = e.target.value; const tr = FV.el?.querySelector('.fv-tree'); if (tr) tr.innerHTML = FV.tree(); } });
+// Open a file in the Files tile at a line (search results, problems, Ctrl+P).
+export async function openInEditor(file, line) {
+  if (!CP.key || CP.bot) return;
+  if (WS.on && !WS.tiles.includes('files')) { WS.tiles.push('files'); saveWS(); }
+  if (!WS.on) CP.tab = 'files';
+  if (!codePaneOpen()) openCodePane(); else renderPane();
+  for (let n = 0; n < 20 && !FV.el; n++) await new Promise((r) => setTimeout(r, 100));
+  await FV.load(file);
+  for (let n = 0; n < 30 && !FV.ed; n++) await new Promise((r) => setTimeout(r, 100));
+  if (line && FV.ed) { const doc = FV.ed.view.state.doc, ln = doc.line(Math.max(1, Math.min(doc.lines, line))); FV.ed.view.dispatch({ selection: { anchor: ln.from }, scrollIntoView: true }); FV.ed.view.focus(); }
+}
+export const editorFile = () => FV.file;
+export const codeKey = () => (CP.bot ? null : CP.key);
+export const codeInfo = () => CP.info;
+export const showTile = (k) => { if (WS.on) { if (!WS.tiles.includes(k)) WS.tiles.push(k); saveWS(); } else CP.tab = k; if (!codePaneOpen()) openCodePane(); else renderPane(); };
+export const reloadCode = () => loadCode();
 // Drag the panel's left edge to make it narrower or wider (remembered per device; double-click resets).
 const setCodeW = (w) => { if (w) document.body.style.setProperty('--code-w', w + 'px'); else document.body.style.removeProperty('--code-w'); FV.ed?.view.requestMeasure(); };
 // Tabs and Workspace each remember their own width; Workspace starts at about 60% of the window.
@@ -686,7 +719,8 @@ document.addEventListener('click', async (e) => {
     }
     if (a === 'merge') {
       if (!confirm(`Merge ${CP.info.branch} into ${CP.info.base}?`)) return;
-      await X.api(`/api/code/${enc(k)}/merge`, { method: 'POST', body: {} }); X.toast(`Merged into ${CP.info.base}`); return loadCode();
+      try { await X.api(`/api/code/${enc(k)}/merge`, { method: 'POST', body: {} }); } catch (err) { if (/merged cleanly/.test(err.message) && CODE_EXT.conflict) return CODE_EXT.conflict(k); throw err; }
+      X.toast(`Merged into ${CP.info.base}`); return loadCode();
     }
     if (a === 'push') {
       if (!confirm(`Push ${CP.info.branch} to ${CP.info.remote}?`)) return;

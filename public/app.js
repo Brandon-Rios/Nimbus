@@ -3,9 +3,13 @@ import { attachAutocorrect } from './autocorrect.js';
 import { THEMES, resolveTheme, applyThemeVars } from './themes.js';
 import { startVoice, voiceMessage } from './voice.js';
 import { LANGS, LANG_NAMES, uiLang, setUiLang, startI18n, setI18nNames } from './i18n.js';
-import { initPro, settingsPage, usagePage, statusPage, whatsNew, searchPage, tour, friendly, setConnected, queueSend } from './pro.js';
+import { initPro, usagePage, statusPage, whatsNew, searchPage, tour, friendly, setConnected, queueSend } from './pro.js';
 import { initCode, codeSidebar, codeProject, codeThreadOpened, toggleCodePane, toggleBotTile, syncBotBtns, onCodeChanged, renderChanges, codeStepHtml, codeProjectModal, runInTerminal, botWorkspaceUpdate, CODE_ICON, CM, setCodeMode, codeModeSide, newCodeThread, codeDraftMain, codeDraftSend, deleteCodeProject } from './codeui.js';
 import { highlight, langOf, LANG_NAME } from './hl.js';
+import { initCode2, renderTestRun, fileMatches } from './code2.js';
+import { initExtras3, autoApprovePage, dreamPage, skillsPage, connectorsPage, memoryButton, cameraModal, voiceMode } from './extras3.js';
+import { initExtras2, backupsPage, ipMapPage, journalPage, logsPage, routingPage, mapPage, officePage, officeHandoff, PLAN_TAG, planButton, approvePlan } from './extras2.js';
+import { initExtras, watchdogPage, playbooksPage, chainsPage, factsPage, budgetsPage, laterModal, saveAsPlaybook, postMortemPrompt, digestCard } from './extras.js';
 import { startRecording, stopRecording, cancelRecording, isRecording, browserDictation } from './dictation.js';
 const $ = (s, el = document) => el.querySelector(s);
 // Split panes: an extra pane is this same app in a frame (?pane=<id>), showing one chat without the sidebar.
@@ -33,6 +37,7 @@ const ICON = {
   gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3.9a7 7 0 0 0-2-1.2L14.2 3h-4l-.4 2.6a7 7 0 0 0-2 1.2l-2.4-.9-2 3.4 2 1.5a7 7 0 0 0 0 2.4l-2 1.5 2 3.4 2.4-.9a7 7 0 0 0 2 1.2l.4 2.6h4l.4-2.6a7 7 0 0 0 2-1.2l2.3.9 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z"/>'),
   globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'),
   file: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
+  box: svg('<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/>'),
   folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
   download: svg('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'),
   share: svg('<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m8.2 10.8 7.6-3.6M8.2 13.2l7.6 3.6"/>'),
@@ -44,6 +49,8 @@ const ICON = {
   sidebar: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>'),
   chevron: svg('<path d="m9 6 6 6-6 6"/>', 14),
   voice: svg('<path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/>'),
+  wave: svg('<path d="M3 12h2M7 8v8M11 5v14M15 8v8M19 11v2"/>'),
+  camera: svg('<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>'),
   mic: svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'),
   clip: svg('<path d="m20 11.5-8.3 8.3a5 5 0 0 1-7-7l8.8-8.8a3.3 3.3 0 0 1 4.7 4.7l-8.8 8.8a1.7 1.7 0 0 1-2.4-2.4l8.1-8.1"/>'),
   keyboard: svg('<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>'),
@@ -159,6 +166,10 @@ const TI = {
 };
 const sideOpen = JSON.parse(localStorage.sideOpen || '{}'); // bot id / 'p<id>' -> expanded?
 const saveSideOpen = () => { localStorage.sideOpen = JSON.stringify(sideOpen); };
+initExtras({ S, api, esc, modal, closeModal: (...a) => closeModal(...a), toast, bot, avatar, ICON, openSettings: (k, r) => openSettings(k, r) });
+initExtras2({ S, api, esc, modal, closeModal: (...a) => closeModal(...a), toast, bot, avatar, ICON, openThread: (k) => openThread(k) });
+initCode2({ S, api, esc, modal, closeModal: (...a) => closeModal(...a), toast, bot, avatar, ICON, openThread: (k) => openThread(k), threadKey: () => threadKey(), refreshState: () => refreshState() });
+initExtras3({ S, api, esc, modal, closeModal: (...a) => closeModal(...a), toast, bot, avatar, ICON, openThread: (k) => openThread(k), threadKey: () => threadKey(), addFiles: (f) => addFiles(f) });
 initPro({ S, api, esc, modal, closeModal, toast, bot, avatar, ICON, openThread, refreshState: () => refreshState(), stamp, threadName, botOfThread: (k) => { const m = /^bot:(\d+)$/.exec(k || ''); return m ? Number(m[1]) : threadOf(k)?.bot_id ?? null; }, kbHint: (a) => { if (a === 'palette') return 'Ctrl+K'; const c = kbGet(a); return c ? kbLabel(c) : ''; } });
 initCode({ mountBrowser: (id, el) => openBrowser(id, el), stopBrowserView: () => stopBrowserView(), browserBot: () => BR.bot, botEnvHtml, S, api, esc, modal, closeModal, toast, bot, avatar, ICON, TI, BOT_COLORS, threadKey, threadOf, openThread, refreshState, renderSide: () => renderSide(), renderMain: () => renderMain(), stamp, popover, sideOpen });
 function crumbHtml() {
@@ -204,7 +215,7 @@ function sharedProjects(key) {
         <div class="side-sub-add"><button data-proj-thread="${p.id}">${ICON.plus}<span>New thread</span></button></div></div>` : '');
   }).join('');
 }
-const BT = [['about', 'Overview: branch, merge, push', '<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 8v8M18 10c0 4-6 3-12 6"/>'], ['terminal', 'Terminal', '<path d="m5 8 4 4-4 4M12 16h7"/>'], ['changes', 'Changes', '<path d="M12 4v10M7 9h10M7 20h10"/>'], ['preview', 'Browser: app preview', '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>'], ['files', 'Files', '<path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/>'], ['tests', 'Tests', '<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/>'], ['commits', 'Commits', '<circle cx="12" cy="12" r="3"/><path d="M3 12h6M15 12h6"/>']];
+const BT = [['about', 'Overview: branch, merge, push', '<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 8v8M18 10c0 4-6 3-12 6"/>'], ['terminal', 'Terminal', '<path d="m5 8 4 4-4 4M12 16h7"/>'], ['changes', 'Changes', '<path d="M12 4v10M7 9h10M7 20h10"/>'], ['preview', 'Browser: app preview', '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>'], ['files', 'Files', '<path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/>'], ['tests', 'Tests', '<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/>'], ['commits', 'Commits', '<circle cx="12" cy="12" r="3"/><path d="M3 12h6M15 12h6"/>'], ['pr', 'Pull request: checks and review comments', '<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="M6 8v8M18 16V9a3 3 0 0 0-3-3h-4m2-2-2 2 2 2"/>'], ['issues', 'GitHub issues', '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="1.5"/>'], ['search', 'Search in files (Ctrl+Shift+F)', '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/>'], ['problems', 'Problems: lint and type errors', '<path d="M12 3 2 20h20L12 3zM12 10v4M12 17h.01"/>']];
 const BT_BTNS = `<span class="bt-group">${BT.map(([k, l, d]) => `<button class="icon-btn bt-btn" data-bt="${k}" title="${l}" aria-label="${l}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>${k === 'changes' ? '<small class="bt-n"></small>' : ''}</button>`).join('')}</span>`;
 const WS_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M9 12h12"/></svg>';
 const PENDING_DEL = new Set(); // threads deleted a moment ago, still undoable
@@ -481,7 +492,7 @@ function renderSide() {
       ${sideQuery ? '' : `<button class="side-item side-home ${S.home ? 'active' : ''}" data-act="home"><span class="av-wrap"><span class="home-ico">${ICON.home}</span></span><span class="meta"><span class="row1"><span class="name">Home</span>${homeCount() ? `<span class="unread-badge">${homeCount()}</span>` : ''}</span><span class="sub">What your bots are up to</span></span></button>`}
       ${items.length ? sideSections(items).map(([g, list]) => (g ? `<div class="side-group-head" data-group="${g.id}"><span class="side-caret ${g.collapsed ? '' : 'open'}">${TI.chev}</span><span class="g-name">${esc(g.name)}</span><span class="g-count">${list.length}</span><span class="icon-btn g-edit" data-group-edit="${g.id}" role="button" aria-label="Edit group">${ICON.dots || '⋯'}</span></div><div class="side-group-body" ${g.collapsed && !sideQuery ? 'hidden' : ''}>` : '') + list.map((it) => `
         <button class="side-item ${isUnread(it) ? 'unread' : ''} ${key === it.key || (it.bot && S.current?.type === 'bot' && S.current.id === it.bot.id && !sideIsOpen(it.bot.id)) ? 'active' : ''}" data-open="${it.key}" data-key="${it.key}">
-          <span class="av-wrap">${it.av}${it.state !== 'idle' ? `<span class="dot ${it.state}"></span>` : ''}</span>
+          <span class="av-wrap ${it.bot && S.data.moods?.[it.bot.id] ? 'mood-' + S.data.moods[it.bot.id] : ''}">${it.av}${it.state !== 'idle' ? `<span class="dot ${it.state}"></span>` : ''}</span>
           <span class="meta">
             <span class="row1"><span class="name">${esc(it.name)}</span><span class="time">${it.last ? stamp(it.last.at) : ''}</span>${isUnread(it) ? '<i class="unread-dot" aria-label="Unread"></i>' : ''}</span>
             <span class="sub">${esc(it.last ? (it.last.author === 'user' ? 'You: ' : '') + it.last.text : it.fallback || 'Say hi')}</span>
@@ -912,7 +923,7 @@ function renderMain() {
   if (!S.current && S.home && !EMBED) {
     // Live updates redraw Home; keep what you were typing (and which bot) in the quick-ask box.
     const q = $('#home-q'), keep = q && { v: q.value, f: document.activeElement === q, s: q.selectionStart, bot: $('#home-bot')?.value };
-    main.innerHTML = renderHome(); if (S.data.proxmox) loadProxmox();
+    main.innerHTML = renderHome(); digestCard(); if (S.data.proxmox) loadProxmox();
     if (keep) { const n = $('#home-q'); n.value = keep.v; $('#home-bot').value = keep.bot; if (keep.f) { n.focus(); n.setSelectionRange(keep.s, keep.s); } }
     return;
   }
@@ -966,7 +977,11 @@ function renderMain() {
       <form id="composer">
         <button type="button" class="plus" data-act="${isBot ? 'plugins' : 'edit-room'}" aria-label="${isBot ? 'Plugins' : 'Chat settings'}">${ICON.plus}</button>
         <button type="button" class="plus" data-act="attach" aria-label="Attach files">${ICON.clip}</button>
+        <button type="button" class="plus plan-tg ${S.planFirst ? 'on' : ''}" data-act="plan-toggle" aria-pressed="${!!S.planFirst}" aria-label="Plan first" title="Plan first: the bot shows its plan and commands, you approve once">${ICON.check}</button>
+        <button type="button" class="plus" data-act="later" aria-label="Send later" title="Send later">${ICON.clock}</button>
         <button type="button" class="plus mic" data-act="dictate" aria-label="Dictate" title="Dictate (tap to start, tap to stop)">${ICON.mic}</button>
+        ${isBot ? `<button type="button" class="plus" data-act="voice-mode" aria-label="Voice mode" title="Voice mode: talk back and forth, hands-free">${ICON.wave}</button>` : ''}
+        <button type="button" class="plus" data-act="camera" aria-label="Camera" title="Take a photo and attach it">${ICON.camera}</button>
         <input type="file" id="file-pick" multiple hidden>
         <label for="msg" class="sr">Message</label>
         <textarea id="msg" rows="1" placeholder="${isBot ? `Message ${esc(b.name)}${codeProject(threadKey())?.p.members.length > 1 ? ' · @ a bot to hand it work' : ''}` : `Message ${esc(r.name)} · @ a bot to direct it`}"></textarea>
@@ -1055,25 +1070,26 @@ function renderFiles(m) {
   try { files = JSON.parse(m.files || '[]'); } catch {}
   if (!files.length) return '';
   return `<div class="files">${files.map((f) => isHtml(f)
-    ? `<div class="html-card"><a class="hc-thumb" href="${fileUrl(f)}" data-view="${f.id}" data-doc="${f.doc || ''}" aria-label="Open ${esc(f.name)}"><iframe class="html-thumb" data-src="${fileUrl(f)}?download" sandbox="allow-scripts" tabindex="-1" loading="lazy" title="Preview of ${esc(f.name)}"></iframe></a>
+    ? `<div class="html-card"><a class="hc-thumb" href="${fileUrl(f)}" data-view="${f.id}" data-doc="${f.doc || ''}" aria-label="Open ${esc(f.name)}"><iframe class="html-thumb" src="${fileUrl(f)}?sandbox" sandbox="allow-scripts" tabindex="-1" loading="lazy" title="Preview of ${esc(f.name)}"></iframe></a>
         <div class="hc-row"><span class="hc-badge">${ICON.globe} Web page</span><span class="hc-name">${esc(f.name)}</span><small>${f.version > 1 ? `v${f.version} · ` : ''}${fmtSize(f.size)}</small>
         <a class="btn pill small primary" href="${fileUrl(f)}" data-view="${f.id}" data-doc="${f.doc || ''}">Open</a></div></div>`
     : isImage(f)
-    ? `<a class="file-img" href="${fileUrl(f)}" target="_blank" rel="noopener"><img src="${fileUrl(f)}" alt="${esc(f.name)}" loading="lazy"></a>`
+    ? `<span class="file-img-wrap"><a class="file-img" href="${fileUrl(f)}" target="_blank" rel="noopener"><img src="${fileUrl(f)}" alt="${esc(f.name)}" loading="lazy"></a>${m.author === 'user' ? `<button type="button" class="file-del" data-file-del="${m.id}:${f.id}" title="Delete this image" aria-label="Delete ${esc(f.name)}">${ICON.close}</button>` : ''}</span>`
     : f.preview ? `<div class="file-card"><a href="${fileUrl(f)}" data-view="${f.id}" data-doc="${f.doc || ''}"><img src="${fileUrl(f.preview)}" alt="Preview of ${esc(f.name)}" loading="lazy"></a>
         <div class="fc-row">${ICON.file}<span>${esc(f.name)}</span><small>${f.version > 1 ? `v${f.version} · ` : ''}${fmtSize(f.size)}</small><a class="btn pill small" href="${fileUrl(f)}" data-view="${f.id}" data-doc="${f.doc || ''}">Open</a></div></div>`
         : `<a class="file-chip" href="${fileUrl(f)}" data-view="${f.id}" data-doc="${f.doc || ''}">${ICON.file}<span>${esc(f.name)}</span><small>${f.version > 1 ? `v${f.version} · ` : ''}${fmtSize(f.size)}</small></a>`).join('')}</div>`;
 }
 const isHtml = (f) => /\.html?$/i.test(f.name) || f.type === 'text/html';
-// Live mini preview of a web page a bot made: fetched once, shown scaled down in a script-only sandbox (no access to Nimbus).
-new MutationObserver(() => {
-  for (const fr of document.querySelectorAll('iframe.html-thumb:not([data-loaded])')) {
-    fr.dataset.loaded = '1';
-    fetch(fr.dataset.src).then((r) => r.ok ? r.text() : '').then((html) => { fr.srcdoc = html.slice(0, 2_000_000); }).catch(() => {});
-  }
-}).observe(document.documentElement, { childList: true, subtree: true });
 function fmtSize(n) { return n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
 
+// Delete a file you sent: gone from the chat, the server and the bot's copy.
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-file-del]'); if (!b) return;
+  e.preventDefault(); e.stopPropagation(); closePopover();
+  const [mid, fid] = b.dataset.fileDel.split(':');
+  if (!confirm(fid === 'all' ? 'Delete the files in this message? They are removed from Nimbus for good.' : 'Delete this image? It is removed from Nimbus for good.')) return;
+  try { await api(`/api/messages/${mid}/files/${fid}`, { method: 'DELETE' }); buzz(10); toast('Deleted'); } catch (err) { toast(err.message); }
+}, true);
 document.addEventListener('click', async (e) => {
   const c = e.target.closest('#thread code[data-copy-path]'); if (!c) return;
   buzz(6); toast(await clip(c.textContent) ? 'Copied ' + c.textContent : 'Couldn’t copy');
@@ -1093,7 +1109,8 @@ document.addEventListener('contextmenu', (e) => {
   el.className = 'popover';
   el.innerHTML = `${inside ? `<button data-redact-sel>${ICON.lock}<span>Redact “${esc(sel.length > 24 ? sel.slice(0, 24) + '…' : sel)}”</span></button>` : ''}
     <button data-redact-all>${ICON.lock}<span>Redact whole message</span></button>
-    <button data-copy-msg>${ICON.check}<span>Copy</span></button>`;
+    <button data-copy-msg>${ICON.check}<span>Copy</span></button>
+    ${(() => { const mm = S.messages.find((x) => x.id === id); let n = 0; try { n = JSON.parse(mm?.files || '[]').length; } catch {} return mm?.author === 'user' && n ? `<button data-file-del="${id}:all">${ICON.close}<span>Delete ${n > 1 ? `all ${n} files` : 'attached file'}</span></button>` : ''; })()}`;
   document.body.append(el);
   el.style.left = Math.max(8, Math.min(e.clientX, innerWidth - el.offsetWidth - 8)) + 'px';
   el.style.top = Math.max(8, Math.min(e.clientY, innerHeight - el.offsetHeight - 8)) + 'px';
@@ -1101,6 +1118,7 @@ document.addEventListener('contextmenu', (e) => {
     const b = ev.target.closest('button'); if (!b) return;
     closePopover();
     const m = S.messages.find((x) => x.id === id);
+    if (b.dataset.fileDel) return;
     if (b.dataset.copyMsg !== undefined) { return toast(await clip(m?.body || '') ? 'Copied' : 'Couldn’t copy'); }
     const text = b.dataset.redactSel !== undefined ? sel : '';
     if (!confirm(text ? `Replace “${text.slice(0, 80)}” with [REDACTED] everywhere Nimbus stored it?` : 'Replace this whole message with [REDACTED]? It’s also removed from saved prompts and bot transcripts.')) return;
@@ -1131,6 +1149,7 @@ const SLASH = [
   ['/routines', '', 'The bot’s scheduled routines', (a, b) => routinesModal(b)],
   ['/rename', '<name>', 'Rename this thread', (a) => slashRename(a)],
   ['/thread', '[name]', 'Start a new thread with this bot', (a, b) => slashThread(a, b)],
+  ['/later', '[message]', 'Schedule a message to send later', (a) => { laterModal(threadKey(), a || ''); }],
   ['/project', '', 'Move this thread into a project', () => { const t = threadOf(threadKey()); if (t?.kind !== 'chat') return toast('Start a thread with /thread first: General, Inbox and Routines stay where they are'); moveThreadModal(t); }],
   ['/browser', '', 'Open the bot’s browser', (a, b) => openBrowser(b.id)],
   ['/split', '[down]', 'Split the view into another pane', (a) => paneCmd(/^d/i.test(a) ? 'split-down' : 'split-right')],
@@ -1152,10 +1171,20 @@ function slashHint(v) {
   const items = !show ? [] : [
     ...SLASH.filter(([c]) => c.startsWith(q)).map(([c, a, d]) => ({ c, a, d })),
     ...loadBotCmds(S.current.id).filter((x) => x.cmd.toLowerCase().includes(q.slice(1)) && !SLASH.some(([c]) => c === x.cmd)).map((x) => ({ c: x.cmd, a: x.args || '', d: x.desc, src: x.source, api: x.api }))
-  ].slice(0, 40);
+  ].sort((a, b) => !a.c.toLowerCase().startsWith(q) - !b.c.toLowerCase().startsWith(q)).slice(0, 40);
   if (!items.length) return box?.remove();
+  slashSel = 0;
   if (!box) { box = document.createElement('div'); box.id = 'slash-hint'; box.className = 'slash-hint'; $('.composer').prepend(box); }
-  box.innerHTML = items.map((i) => `<button type="button" data-slash="${esc(i.c)}" data-args="${i.a ? 1 : ''}" data-api="${i.api ? 1 : ''}"><b>${esc(i.c)}</b>${i.a ? `<i>${esc(i.a)}</i>` : ''}<span>${esc(i.d)}</span>${i.src ? `<em>${esc(i.src)}</em>` : ''}</button>`).join('');
+  box.innerHTML = items.map((i, n) => `<button type="button" class="${n ? '' : 'sel'}" data-slash="${esc(i.c)}" data-args="${i.a ? 1 : ''}" data-api="${i.api ? 1 : ''}"><b>${esc(i.c)}</b>${i.a ? `<i>${esc(i.a)}</i>` : ''}<span>${esc(i.d)}</span>${i.src ? `<em>${esc(i.src)}</em>` : ''}${n ? '' : '<kbd>Tab</kbd>'}</button>`).join('');
+}
+// Tab fills the highlighted command; Up/Down move the highlight.
+let slashSel = 0;
+function slashMove(d) {
+  const all = [...document.querySelectorAll('#slash-hint [data-slash]')]; if (!all.length) return false;
+  slashSel = (slashSel + d + all.length) % all.length;
+  all.forEach((b, n) => { b.classList.toggle('sel', n === slashSel); b.querySelector('kbd')?.remove(); });
+  all[slashSel].insertAdjacentHTML('beforeend', '<kbd>Tab</kbd>'); all[slashSel].scrollIntoView({ block: 'nearest' });
+  return true;
 }
 // @ in a group chat or Nimbus Code thread: pick a bot to hand the message to.
 function mentionBots() {
@@ -1164,17 +1193,20 @@ function mentionBots() {
   const c = codeProject(threadKey()); return c ? c.p.members.map(bot).filter(Boolean) : [];
 }
 function mentionHint(ta) {
-  const m = ta.value.slice(0, ta.selectionStart).match(/(?:^|\s)@([\w-]*)$/);
+  const m = ta.value.slice(0, ta.selectionStart).match(/(?:^|\s)@([\w./-]*)$/);
   const q = m?.[1].toLowerCase();
-  const list = m ? mentionBots().filter((b) => b.name.toLowerCase().split(/\s+/).some((w) => w.startsWith(q)) || b.name.toLowerCase().startsWith(q)) : [];
+  const list = m && !/[./]/.test(q) ? mentionBots().filter((b) => b.name.toLowerCase().split(/\s+/).some((w) => w.startsWith(q)) || b.name.toLowerCase().startsWith(q)) : [];
+  // Nimbus Code: @ also picks a file, so the bot gets its exact path instead of searching for it.
+  const fl = m && codeProject(threadKey()) ? fileMatches(q, list.length ? 5 : 8) : [];
   let box = $('#mention-hint');
-  if (!list.length) return box?.remove();
+  if (!list.length && !fl.length) return box?.remove();
   if (!box) { box = document.createElement('div'); box.id = 'mention-hint'; box.className = 'slash-hint mention-hint'; $('.composer').prepend(box); }
-  box.innerHTML = list.map((b, i) => `<button type="button" class="${i === 0 ? 'on' : ''}" data-mention="${b.id}">${avatar(b, 20)}<b>${esc(b.name)}</b><span>${esc(b.role || '')}</span></button>`).join('');
+  box.innerHTML = list.map((b, i) => `<button type="button" class="${i === 0 ? 'on' : ''}" data-mention="${b.id}">${avatar(b, 20)}<b>${esc(b.name)}</b><span>${esc(b.role || '')}</span></button>`).join('')
+    + fl.map((f, i) => `<button type="button" class="${!list.length && i === 0 ? 'on' : ''}" data-mention="f:${esc(f)}"><span class="mono">📄</span><b>${esc(f.split('/').pop())}</b><span class="mono">${esc(f)}</span></button>`).join('');
 }
 function pickMention(id) {
-  const ta = $('#msg'), b = bot(Number(id)); $('#mention-hint')?.remove(); if (!ta || !b) return;
-  const pos = ta.selectionStart, before = ta.value.slice(0, pos).replace(/@[\w-]*$/, '@' + b.name + ' ');
+  const ta = $('#msg'), file = String(id).startsWith('f:') ? String(id).slice(2) : null, b = file ? null : bot(Number(id)); $('#mention-hint')?.remove(); if (!ta || (!b && !file)) return;
+  const pos = ta.selectionStart, before = ta.value.slice(0, pos).replace(/@[\w./-]*$/, '@' + (file || b.name) + ' ');
   ta.value = before + ta.value.slice(pos); ta.focus(); ta.setSelectionRange(before.length, before.length); autosize(ta);
 }
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-mention]'); if (b) pickMention(b.dataset.mention); });
@@ -1435,7 +1467,8 @@ function clearAttachments() {
 
 function renderMessage(m, prev) {
   if (m.author === 'user') return `<div class="msg user" data-mid="${m.id}">${renderFiles(m)}${m.body ? `<div class="bubble">${linkify(esc(m.body))}</div>` : ''}${msgStamp(m.created_at)}
-    ${m.queued ? `<div class="queued-tag">Queued · waits for the current task</div><div class="msg-actions show"><button data-qedit="${m.id}">Edit</button><button data-qcancel="${m.id}">Cancel</button></div>` : m.body ? `<div class="msg-actions"><button data-copy="${m.id}" title="Copy">Copy</button><button data-edit="${m.id}" title="Edit and resend">Edit</button><button data-retry="${m.id}" title="Send again">Retry</button></div>` : ''}</div>`;
+    ${m.queued ? `<div class="queued-tag">Queued · waits for the current task</div><div class="msg-actions show"><button data-qedit="${m.id}">Edit</button><button data-qcancel="${m.id}">Cancel</button></div>` : m.body ? `<div class="msg-actions"><button data-copy="${m.id}" title="Copy">Copy</button><button data-edit="${m.id}" title="Edit and resend">Edit</button><button data-retry="${m.id}" title="Send again">Retry</button>${S.current?.type === 'bot' ? `<button data-rewind="${m.id}" title="Undo everything from here on: the bot’s file changes and this part of the chat">Rewind</button>` : ''}</div>` : ''}</div>`;
+  if (m.kind === 'testrun') return renderTestRun(m);
   if (m.kind === 'note') return `<div class="note" data-mid="${m.id}">${esc(m.body)}${renderFiles(m)}</div>`;
   if (m.kind === 'quiet') return `<div class="note quiet-ok" data-mid="${m.id}" title="Quiet check at ${clock(m.created_at)}">✓ All clear · ${esc(m.body)} <span class="muted">· ${clock(m.created_at)}</span></div>`;
   const b = bot(m.author) || { name: 'Deleted bot', color: '#555' };
@@ -1450,8 +1483,8 @@ function renderMessage(m, prev) {
       <div class="docuse-acts">${docs.map((d) => d.acts.map((a) => `<button class="docuse-act" data-doc-open="${esc(d.id)}">${names[a] || esc(a)}${docs.length > 1 ? ` · <span class="muted">${esc(d.title)}</span>` : ''} <span class="go">›</span></button>`).join('')).join('')}</div></details></div>`;
   }
   if (m.kind === 'doc') { let d = {}; try { d = JSON.parse(m.body); } catch {} return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<button class="doc-card" data-doc-open="${esc(d.docId || '')}"><span class="dc-ico">📄</span><span><b>${esc(d.title || 'Document')}</b><small>Live document · click to open</small></span><span class="dc-open">Open</span></button></div>`; }
-  return `<div class="msg bot ${m.kind === 'error' ? 'error' : ''}" data-mid="${m.id}" title="${clock(m.created_at)}">${speakerLabel(m, prev)}${m.body ? `<div class="bubble md">${md(m.body)}</div>` : ''}${renderFiles(m)}${msgStamp(m.created_at)}
-    <div class="msg-actions"><button data-copy="${m.id}">Copy</button>${m.kind === 'error' ? '<button data-continue="1">Try again</button>' : `<button data-quote="${m.id}" title="Quote this in your reply">Quote</button><button data-pin="${m.id}">${isPinned(m.id) ? 'Unpin' : 'Pin'}</button><button data-branch="${m.id}" title="Start a new thread that picks up from this reply">New thread from here</button><button data-speak="${m.id}">▶ Read aloud</button><button data-continue="1">Continue</button>`}</div></div>`;
+  return `<div class="msg bot ${m.kind === 'error' ? 'error' : ''}" data-mid="${m.id}" title="${clock(m.created_at)}">${speakerLabel(m, prev)}${m.body ? `<div class="bubble md">${md(m.body.replace(/\n?PLAN_READY\s*$/, ''))}</div>` : ''}${m.kind === 'text' ? planButton(m) + memoryButton(m) : ''}${renderFiles(m)}${msgStamp(m.created_at)}
+    <div class="msg-actions"><button data-copy="${m.id}">Copy</button>${m.kind === 'error' ? '<button data-continue="1">Try again</button>' : `<button data-quote="${m.id}" title="Quote this in your reply">Quote</button><button data-pin="${m.id}">${isPinned(m.id) ? 'Unpin' : 'Pin'}</button><button data-branch="${m.id}" title="Start a new thread that picks up from this reply">New thread from here</button><button data-speak="${m.id}">▶ Read aloud</button><button data-continue="1">Continue</button><button data-postmortem="1" title="Have the bot write up this fix as a live doc">Post-mortem</button>`}</div></div>`;
 }
 
 // While a bot works, the label cycles through cloud-themed phrases. The phrase is picked from the
@@ -1469,6 +1502,7 @@ const LOADER = '<span class="loader" aria-hidden="true"><i></i><i></i><i></i></s
 const fmtTok = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n));
 function traceStats(t) {
   const bits = [];
+  if (t.routed) bits.push(`<span title="Model routing picked a lighter model for this task">${esc(t.routed)}</span>`);
   if (t.tokens) bits.push(`<span title="Tokens read / written this run (including cached context)">${fmtTok(t.tokens.in)} in · ${fmtTok(t.tokens.out)} out</span>`);
   if (t.context) {
     const win = t.contextWindow || 200000, pc = Math.min(100, Math.round((t.context / win) * 100));
@@ -1539,6 +1573,7 @@ function renderTrace(m, prev) {
     <summary>${running ? LOADER : ICON.chevron}<span>${label}</span><span class="sp"><span data-dur>${dur}</span>${traceStats(t)}</span>${running ? `<button class="stop" data-stop="${m.run_id}">Stop</button>` : ''}</summary>
     <div class="steps">
       ${t.steps.map((s) => codeStepHtml(s, mark[s.state] ?? '', !codeProject(threadKey())) ?? `<div class="step"><span class="mark ${s.state}">${mark[s.state] ?? ''}</span><span><code class="step-raw no-i18n">${s.tool === 'Bash' ? highlight(s.text, 'sh') : esc(s.text)}</code></span></div>`).join('')}
+      ${!running && t.steps.some((s) => s.tool === 'Bash' && s.cmd && s.state === 'done') ? `<div class="trace-tools"><button class="btn small" data-save-pb="${m.id}">${ICON.check} Save as playbook</button><span class="muted small">Rerun these commands later without Claude</span></div>` : ''}
       ${running && t.lastThought ? `<div class="thought">${esc(t.lastThought)}</div>` : ''}
     </div>
   </details></div>`;
@@ -1555,6 +1590,7 @@ function renderApproval(m, b, prev) {
     <div class="label">${pending ? ICON.lock : `<span class="stamp">${a.status === 'approved' ? '✓' : '✕'}</span>`} ${pending ? 'Needs your approval' : done}</div>
     <div>${esc(describeTool(a.tool, a.input).split(' — ')[0].replace(/^Run: .*/, 'Run a command'))}</div>
     <pre>${esc(input)}</pre>
+    ${a.why && pending ? `<div class="aa-why">⚠ ${esc(a.why)}</div>` : ''}
     ${a.note ? `<div class="muted">Your note: ${esc(a.note)}</div>` : ''}
     ${pending ? `<div class="row">
       <button class="btn primary" data-approve="${a.approvalId}">Approve</button>
@@ -1682,6 +1718,9 @@ function connect() {
   const soon = () => { clearTimeout(pending); pending = setTimeout(async () => { await refreshState(); if (S.current) updateHeaderBits(); }, 150); };
   for (const ev of ['bot_status', 'state_changed', 'approvals_changed']) es.addEventListener(ev, soon);
   es.addEventListener('docs_changed', () => fileDocsChanged());
+  es.addEventListener('handoff', (e) => officeHandoff(JSON.parse(e.data)));
+  es.addEventListener('thread_reload', (e) => { if (JSON.parse(e.data).thread === threadKey()) openThread(threadKey()); });
+  es.addEventListener('extras', (e) => { const d = JSON.parse(e.data); if (S.home) digestCard(); if (d.what === 'watch') refreshState(); });
   es.addEventListener('code_changed', (e) => { const d = JSON.parse(e.data); onCodeChanged(d.thread, d.file); });
   es.addEventListener('doc_changed', (e) => {
     const m = JSON.parse(e.data);
@@ -1751,7 +1790,7 @@ function notify(m) {
   if (EMBED) return; // the main window notifies
   if (!('Notification' in window) || Notification.permission !== 'granted' || document.visibilityState === 'visible') return;
   const a = JSON.parse(m.body);
-  const n = new Notification(`${bot(m.author)?.name || 'A bot'} needs approval`, { body: describeTool(a.tool, a.input), icon: '/icon.svg', tag: 'approval-' + a.approvalId });
+  const n = new Notification(`${bot(m.author)?.name || 'A bot'} needs approval`, { body: describeTool(a.tool, a.input), icon: '/icon-192.png', tag: 'approval-' + a.approvalId });
   n.onclick = () => { window.focus(); openThread(m.thread); };
 }
 
@@ -1770,23 +1809,31 @@ function popover(anchor, items) {
 function closePopover() { document.querySelector('.popover')?.remove(); }
 
 // ---------- modals ----------
+// While Settings is open, every settings screen draws inside its right-hand side instead of a new window.
+let MODAL_HOST = null;
 function modal(html, { wide = false, cls = '', sticky = false } = {}) {
   closePopover();
+  if (MODAL_HOST?.isConnected) { MODAL_HOST.innerHTML = `<div class="modal embedded ${cls}">${html}</div>`; MODAL_HOST.scrollTop = 0; setTimeout(() => MODAL_HOST?.querySelector('input:not([type=checkbox]):not([type=color]), textarea')?.focus(), 30); return MODAL_HOST.firstElementChild; }
+  MODAL_HOST = null;
   const root = $('#modal-root');
   root.innerHTML = `<div class="scrim"><div class="modal ${wide ? 'wide' : ''} ${sticky ? 'sticky' : ''} ${cls}" role="dialog" aria-modal="true">${html}</div></div>`;
   const scrim = $('.scrim', root);
-  if (!sticky) scrim.addEventListener('mousedown', (e) => { if (e.target === scrim) closeModal(); });
+  if (!sticky) scrim.addEventListener('mousedown', (e) => { if (e.target === scrim) closeModal(true); });
   setTimeout(() => $('input:not([type=checkbox]):not([type=color]), textarea', root)?.focus(), 30);
   return $('.modal', root);
 }
 // Plays the close animation, unless another modal replaced this one meanwhile.
-function closeModal() {
+let SET_GO = null;
+function closeModal(all = false) {
+  // Inside Settings, "close" on a screen (Cancel, Save) goes back to that screen, not out of Settings.
+  if (!all && MODAL_HOST?.isConnected && SET_GO) return SET_GO(localStorage.setKey);
+  MODAL_HOST = null; SET_GO = null;
   const root = $('#modal-root'), scrim = $('.scrim', root);
   if (!scrim || scrim.classList.contains('closing')) return;
   scrim.classList.add('closing');
   setTimeout(() => { if (root.contains(scrim)) root.innerHTML = ''; }, 160);
 }
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!$('.modal.sticky')) closeModal(); closePopover(); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!$('.modal.sticky')) closeModal(true); closePopover(); } });
 
 // Where this chat's context goes, from Claude Code's own /context report.
 const CTX_COLORS = { 'System prompt': '#9ca3af', 'System tools': '#6366f1', 'System tools (deferred)': '#6b7280', 'MCP tools': '#10b981', 'MCP tools (deferred)': '#6b7280',
@@ -2406,6 +2453,7 @@ async function serverModal() {
     <label class="field">Token secret<input id="s-pve_token_secret" ${secret('pve_token_secret')}></label>
     <div class="update-box"><button class="btn small" data-update>Update computers</button><span class="muted" id="upd-status">Rebuilds them with the latest Claude Code and Chromium. Files, browsers and sign-ins are kept; computers restart.</span></div>
     <h3>Chats</h3>
+    <label class="field">Trusted proxies<input id="s-trusted_proxies" value="${esc(v.trusted_proxies || '')}" placeholder="192.168.1.2"><span class="hint">Reverse proxies in front of Nimbus (e.g. Nginx Proxy Manager). Their requests are counted by the real device’s address, so wrong passwords from one device don’t lock out everyone.</span></label>
     <label class="field">Trusted bots<input id="s-trusted_bots" value="${esc(v.trusted_bots || '')}" placeholder="3"><span class="hint">Bot numbers allowed to read Nimbus’s private data and change its code (e.g. Nimbus Manager). Other bots can’t touch data/, .env or Nimbus’s files; their own folder, uploads and data/shared stay open.</span></label>
     <label class="field">Bot sandbox<input id="s-sandbox" value="${esc(v.sandbox || '')}" placeholder="off"><span class="hint"><code>off</code>, <code>all</code>, bot numbers like <code>5,9</code>, or <code>all,-3</code> for every bot except #3. Sandboxed bots only see their own folder and Nimbus’s tools; the rest of the home folder (keys, ~/.ssh, other bots) is hidden. Needs bubblewrap: <code>apt install bubblewrap</code>. Bots on bot computers aren’t affected.</span></label>
     <label class="field">Threads at once per bot<select id="s-thread_limit">${['1', '2', '3'].map((n) => `<option value="${n}" ${String(v.thread_limit || '2') === n ? 'selected' : ''}>${n}${n === '1' ? ' (threads take turns)' : n === '2' ? ' (default)' : ''}</option>`).join('')}</select><span class="hint">Only your own messages use the extra slots. Routines and requests from other bots always take turns.</span></label>
@@ -3350,6 +3398,10 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.runCode !== undefined) return runInTerminal(t.closest('.codeblk').querySelector('code').textContent);
   if (t.dataset.copyCode !== undefined) { const ok = await clip(t.closest('.codeblk').querySelector('code').textContent); buzz(6); t.textContent = ok ? 'Copied ✓' : 'Couldn’t copy'; t.classList.add('done'); setTimeout(() => { t.textContent = 'Copy'; t.classList.remove('done'); }, 1600); return; }
   if (t.dataset.pin) return togglePin(Number(t.dataset.pin));
+  if (t.dataset.savePb) { const m = S.messages.find((x) => x.id === Number(t.dataset.savePb)); if (m) saveAsPlaybook(JSON.parse(m.body), S.current?.type === 'bot' ? S.current.id : null); return; }
+  if (t.dataset.planOk) { t.disabled = true; return approvePlan(Number(t.dataset.planOk), threadKey()); }
+  if (t.dataset.postmortem) { const ta = $('#msg'); if (ta) { ta.value = postMortemPrompt(); autosize(ta); $('#composer').requestSubmit(); } return; }
+  if (t.dataset.exOpen) return openSettings(t.dataset.exOpen);
   if (t.dataset.pinGo) { const el = $(`#thread [data-mid="${t.dataset.pinGo}"]`); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); } return; }
   if (t.dataset.quote) { const m = S.messages.find((x) => x.id === Number(t.dataset.quote)), ta = $('#msg'); if (ta && m) { ta.value = quoteOf(m) + ta.value; autosize(ta); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } return; }
   if (t.dataset.branch) {
@@ -3384,10 +3436,11 @@ document.addEventListener('click', async (e) => {
         ['plugins', `Plugins${cur.plugins.length ? ` (${cur.plugins.length})` : ''}`, ICON.plug], ['memory', 'Memory', ICON.book],
         ['artifacts', `Artifacts${nA ? ` (${nA} new)` : ''}`, ICON.grid], ['pane-menu', 'Split pane', ICON.split], ['edit-bot', 'Bot settings', ICON.gear]]);
     }
+    case 'later': return laterModal(threadKey(), $('#msg')?.value || '');
     case 'home': $('#side').classList.remove('open'); return openHome();
     case 'palette': return openPalette();
     case 'mark-all-read': SIDE_ITEMS.forEach((it) => it.last && markSeen(it.key, it.last.at)); renderSide(); return toast('All chats marked read', { type: 'ok' });
-    case 'pro-settings': $('#side').classList.remove('open'); return settingsPage();
+    case 'pro-settings': $('#side').classList.remove('open'); return openSettings();
     case 'pro-usage': return usagePage();
     case 'pro-status': return statusPage();
     case 'pro-new': return whatsNew();
@@ -3396,9 +3449,12 @@ document.addEventListener('click', async (e) => {
     case 'home-ask': return homeAsk();
     case 'claude': return claudeModal();
     case 'docs': return docsModal();
+    case 'map': return mapPage();
+    case 'office': return officePage();
+    case 'plan-toggle': S.planFirst = !S.planFirst; t.classList.toggle('on', S.planFirst); t.setAttribute('aria-pressed', S.planFirst); return toast(S.planFirst ? 'Plan first: the bot plans, you approve once, then it runs' : 'Plan first off', { ms: 2500 });
     case 'artifacts': return openArtifacts();
     case 'files': return filesModal();
-    case 'user-menu': e.stopPropagation(); return popover(t, [['pro-settings', 'Settings', ICON.gear], ['pro-new', `What’s new${document.body.classList.contains('has-new') ? ' •' : ''}`, ICON.book], ['pro-search', 'Search messages', ICON.globe], ['pro-usage', 'Usage history', ICON.clock], ['pro-status', 'System status', ICON.monitor], ['appearance', 'Appearance', ICON.gear], ['shortcuts', 'Keyboard shortcuts', ICON.keyboard], ['language', 'Language', ICON.globe], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['docs', 'Documents', ICON.book], ['claude', S.data.claude?.mode === 'none' ? 'Connect Claude ⚠' : 'Claude account', ICON.plug], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
+    case 'user-menu': e.stopPropagation(); return popover(t, [['pro-settings', 'Settings', ICON.gear], ['pro-search', 'Search messages', ICON.globe], ['pro-new', `What’s new${document.body.classList.contains('has-new') ? ' •' : ''}`, ICON.book], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
     case 'new-bot': return botModal();
     case 'edit-bot': return botModal(cur);
     case 'new-room': return roomModal();
@@ -3413,6 +3469,8 @@ document.addEventListener('click', async (e) => {
     case 'language': return languageModal();
     case 'attach': return $('#file-pick').click();
     case 'dictate': return toggleDictation(t);
+    case 'voice-mode': return voiceMode();
+    case 'camera': return cameraModal();
     case 'voice': { const b = bot(S.current?.id); return b && startVoice({ api, thread: threadKey(), botName: b.name, avatarHtml: avatar(b, 28), character: { svg: critter(b.color, outfit(b)), color: b.color, ...outfit(b) }, toast }); }
     case 'mfa': return mfaModal();
     case 'server': return serverModal();
@@ -3512,10 +3570,18 @@ function refreshSideOnly() {
   const i = $('#side-search'); i.focus(); i.setSelectionRange(i.value.length, i.value.length);
 }
 document.addEventListener('keydown', (e) => {
+  if (e.target.id === 'msg' && $('#slash-hint') && !e.isComposing) {
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && slashMove(e.key === 'ArrowDown' ? 1 : -1)) return e.preventDefault();
+    if (e.key === 'Tab' && !e.shiftKey) {
+      const b = document.querySelectorAll('#slash-hint [data-slash]')[slashSel]; if (!b) return;
+      e.preventDefault(); e.target.value = b.dataset.slash + ' '; autosize(e.target); $('#slash-hint')?.remove(); return;
+    }
+    if (e.key === 'Escape') { $('#slash-hint')?.remove(); return e.preventDefault(); }
+  }
   if (e.target.id === 'msg' && e.key === 'Enter' && !e.shiftKey && !e.isComposing && matchMedia('(pointer: fine)').matches) {
     e.preventDefault();
     // A half-typed command with the list open: Enter picks the top match.
-    const first = $('#slash-hint [data-slash]'), v = e.target.value.trim();
+    const first = document.querySelectorAll('#slash-hint [data-slash]')[slashSel], v = e.target.value.trim();
     if (first && /^\/[\w:.-]*$/.test(v) && !SLASH.some(([c]) => c === v.toLowerCase()) && !botCmds.get(S.current?.id)?.list.some((x) => x.cmd === v)) return first.click(); $('#composer').requestSubmit();
   }
 });
@@ -3524,12 +3590,13 @@ document.addEventListener('submit', async (e) => {
   e.preventDefault();
   $('#mention-hint')?.remove();
   if (CM.draft) return codeDraftSend();
-  const ta = $('#msg'); const text = ta.value.trim();
+  const ta = $('#msg'); let text = ta.value.trim();
   if (!attachments.length && runSlash(text)) { ta.value = ''; autosize(ta); $('#slash-hint')?.remove(); return; }
   if (attachments.some((a) => !a.id && !a.error)) return toast('Still uploading…');
   const files = attachments.filter((a) => a.id).map((a) => a.id);
   if (!text && !files.length) return;
   const kept = attachments;
+  if (S.planFirst && text && S.current?.type === 'bot') { text = PLAN_TAG + text; S.planFirst = false; $('.plan-tg')?.classList.remove('on'); }
   const sendBtn = $('.composer .send');
   sendBtn?.classList.remove('launch'); void sendBtn?.offsetWidth; sendBtn?.classList.add('launch');
   buzz(10);
@@ -3626,7 +3693,8 @@ async function drawViewer() {
         doc.body?.focus();
       }, { once: true });
     }
-    fr.srcdoc = t;
+    // Viewing: the saved page from its sandboxed URL. Editing: a script-free copy we can reach into.
+    if (V.code) fr.srcdoc = t; else fr.src = fileUrl(f) + '?sandbox';
   }
   $('iframe', el)?.addEventListener('load', () => $('.viewer-wait', el)?.remove());
 }
@@ -3755,7 +3823,9 @@ document.addEventListener('click', async (e) => {
     case 'code-close': if (V.dirty && !confirm('Discard unsaved changes?')) return; V.code = false; V.dirty = false; return drawViewer();
     case 'html-tab': { const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to open it'); w.opener = null;
       // Same sandbox as the pane, via a blob page that wraps it.
-      const src = editedHtml() ?? V.html ?? '';
+      const edited = editedHtml();
+      if (edited == null) { w.location = fileUrl(f) + '?sandbox'; return; }
+      const src = edited;
       w.location = URL.createObjectURL(new Blob([`<!doctype html><meta charset=utf-8><title>${esc(f.name)}</title><style>html,body,iframe{margin:0;width:100%;height:100%;border:0}</style><iframe sandbox="allow-scripts allow-forms allow-modals allow-popups" srcdoc="${esc(src)}"></iframe>`], { type: 'text/html' }));
       return; }
     case 'restore': try { V.doc = await api(`/api/filedocs/${V.doc.id}/restore`, { method: 'POST', body: { uploadId: f.id } }); V.fileId = V.doc.latest.id; V.follow = true; drawViewer(); toast('Restored as the newest version'); } catch (err) { toast(err.message); } return;
@@ -4107,7 +4177,7 @@ document.addEventListener('keydown', (e) => {
   if (hit[0] === 'sidebar' && e.target.closest?.('[contenteditable="true"]')) return; // Ctrl+B is bold in the editor
   e.preventDefault(); e.stopPropagation();
   if (hit[0] === 'shortcuts') return EMBED ? paneCmd('shortcuts') : shortcutsModal();
-  if (hit[0] === 'settings') return settingsPage();
+  if (hit[0] === 'settings') return openSettings();
   if (hit[0] === 'search') return searchPage();
   if (hit[0] === 'new-thread') return $('[data-act="new-thread"]')?.click();
   if (hit[0] === 'next-chat' || hit[0] === 'prev-chat') {
@@ -4200,6 +4270,7 @@ function renderHome() {
         ${card('Unread', unread.length ? unread.map((it) => row(it.key, it.av, esc(it.name), esc(it.last.text), `<span class="muted">${stamp(it.last.at)}</span>`)).join('') : '<div class="muted">You’re all caught up.</div>')}
         ${card('Routines today', (ranToday.length ? ranToday.map((r) => row('bot:' + r.bot_id, avatar(bot(r.bot_id), 30), esc(bot(r.bot_id)?.name || 'Bot'), esc(r.prompt.slice(0, 80)), `<span class="muted">ran ${clock(r.last_run)}</span>`)).join('') : '<div class="muted">Nothing has run yet today.</div>')
           + (d.upNext.length ? `<div class="home-next">Next: ${d.upNext.slice(0, 3).map((r) => `<span>${whenNext(r.next)} · ${esc(bot(r.bot_id)?.name || '')}</span>`).join('')}</div>` : ''))}
+        <section class="home-card wide" id="home-digest"><h3>Since yesterday</h3><div class="muted">Loading…</div></section>
         ${d.proxmox ? `<section class="home-card wide" id="home-pve">${pveHomeHtml(pveLast)}</section>` : ''}
         ${card('Recent chats', recent.map((it) => row(it.key, it.av, esc(it.name), esc((it.last.author === 'user' ? 'You: ' : '') + it.last.text), `<span class="muted">${stamp(it.last.at)}</span>`)).join('') || '<div class="muted">No chats yet.</div>', 'wide')}
       </div>
@@ -4222,7 +4293,7 @@ function paletteItems() {
   const cur = bot(S.current?.id);
   if (cur && S.current?.type === 'bot') out.push(['new-thread', `New thread with ${cur.name}`, 'Action', ICON.compose], ['routines', `${cur.name}’s routines`, 'Action', ICON.clock],
     ['memory', `${cur.name}’s memory`, 'Action', ICON.book], ['plugins', `${cur.name}’s plugins`, 'Action', ICON.plug], ['edit-bot', `${cur.name} settings`, 'Action', ICON.gear], ['voice', `Voice chat with ${cur.name}`, 'Action', ICON.voice]);
-  out.push(['new-bot', 'New bot', 'Action', ICON.plus], ['new-room', 'New group chat', 'Action', ICON.plus], ['docs', 'Documents', 'Open', ICON.book],
+  out.push(['new-bot', 'New bot', 'Action', ICON.plus], ['new-room', 'New group chat', 'Action', ICON.plus], ['docs', 'Documents', 'Open', ICON.book], ['map', 'Homelab map', 'Open', ICON.monitor], ['office', 'Bot office', 'Open', ICON.home], ['set:backups', 'Backups', 'Open', ICON.box], ['set:autoapprove', 'Auto-approve', 'Open', ICON.check], ['set:skills', 'Skills', 'Open', ICON.box], ['set:connectors', 'Custom connectors (MCP)', 'Open', ICON.plug], ['set:dream', 'Self-review', 'Open', ICON.book], ['voice-mode', 'Voice mode', 'Action', ICON.wave], ['set:ipmap', 'IP map', 'Open', ICON.globe], ['set:logs', 'Search logs', 'Open', ICON.search], ['set:journal', 'Change journal', 'Open', ICON.clock],
     ['appearance', 'Appearance and themes', 'Settings', ICON.gear], ['server', 'Server settings', 'Settings', ICON.monitor], ['log', 'Activity log', 'Open', ICON.clock],
     ['market', 'Connectors', 'Open', ICON.grid], ['cc-plugins', 'Plugins & skills', 'Open', ICON.plug], ['shortcuts', 'Keyboard shortcuts', 'Help', ICON.keyboard], ['panel', 'Approvals and activity', 'Open', ICON.bell]);
   return out;
@@ -4241,6 +4312,7 @@ function openPalette() {
   const run = (act) => {
     closeModal();
     if (act.startsWith('open:')) return openThread(act.slice(5));
+    if (act.startsWith('set:')) return openSettings(act.slice(4));
     const b = document.createElement('button'); b.dataset.act = act; b.style.display = 'none'; document.body.append(b); b.click(); b.remove();
   };
   const q = $('#pal-q');
@@ -4280,3 +4352,41 @@ document.addEventListener('keydown', (e) => { if (e.key === '?' && !e.ctrlKey &&
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-af]'); if (!b) return; localStorage.asideF = b.dataset.af; applyAsideFilter(); });
 function applyAsideFilter() { const f = localStorage.asideF || 'all'; document.querySelectorAll('#aside [data-af]').forEach((b) => b.classList.toggle('on', b.dataset.af === f)); document.querySelectorAll('#aside section').forEach((sec) => { sec.hidden = f !== 'all' && sec.dataset.afSec !== f && !(f === 'sys' && !sec.dataset.afSec && /Usage/.test(sec.textContent.slice(0, 40))); }); }
 new MutationObserver(() => applyAsideFilter()).observe(document.getElementById('aside') || document.body, { childList: true });
+
+// ---------- Settings: one window, every setting in it ----------
+const SET_NAV = [
+  ['General', [['language', 'Language', ICON.globe, () => languageModal()], ['notify', 'Notifications', ICON.bell, () => notifyPane()], ['shortcuts', 'Keyboard shortcuts', ICON.keyboard, () => shortcutsModal()]]],
+  ['Look', [['appearance', 'Appearance', ICON.gear, () => appearanceModal()]]],
+  ['Account', [['claude', 'Claude account', ICON.plug, () => claudeModal()], ['mfa', 'Two-factor sign-in', ICON.lock, () => mfaModal()]]],
+  ['Server', [['server', 'Server settings', ICON.monitor, () => serverModal()], ['status', 'System status', ICON.monitor, () => statusPage()], ['usage', 'Usage history', ICON.clock, () => usagePage()], ['log', 'Activity log', ICON.clock, () => activityLogModal()]]],
+  ['Homelab', [['backups', 'Backups', ICON.box, () => backupsPage()], ['ipmap', 'IP map', ICON.globe, () => ipMapPage()], ['logs', 'Logs', ICON.search, () => logsPage()], ['journal', 'Change journal', ICON.clock, () => journalPage()], ['hmap', 'Homelab map', ICON.monitor, () => { closeModal(true); setTimeout(() => mapPage(() => openSettings('backups')), 50); }], ['office', 'Bot office', ICON.home, () => { closeModal(true); setTimeout(() => officePage(() => openSettings('backups')), 50); }]]],
+  ['AI tools', [['autoapprove', 'Auto-approve', ICON.check, () => autoApprovePage()], ['dream', 'Self-review', ICON.book, () => dreamPage()], ['skills', 'Skills', ICON.box, () => skillsPage()], ['connectors', 'Custom connectors', ICON.plug, () => connectorsPage()]]],
+  ['Automation', [['routing', 'Model routing', ICON.plug, () => routingPage()], ['watchdog', 'Watchdog', ICON.monitor, () => watchdogPage()], ['playbooks', 'Playbooks', ICON.check, () => playbooksPage()], ['handoffs', 'Hand-offs', ICON.plug, () => chainsPage()], ['facts', 'Team memory', ICON.book, () => factsPage()], ['budgets', 'Budgets', ICON.clock, () => budgetsPage()]]],
+  ['Help', [['new', 'What’s new', ICON.book, () => whatsNew()], ['docs', 'Documents', ICON.book, () => docsModal()], ['tour', 'Take the tour', ICON.home, () => { closeModal(true); setTimeout(() => tour(), 200); }]]],
+];
+function notifyPane() {
+  const st = !('Notification' in window) ? 'This browser doesn’t support notifications.' : !window.isSecureContext ? 'Notifications need HTTPS (see the README).' : Notification.permission === 'granted' ? 'On: you get a notification when a bot needs approval.' : Notification.permission === 'denied' ? 'Blocked in this browser’s site settings.' : 'Off on this device.';
+  const el = modal(`<h3>${ICON.bell} Notifications</h3><p class="muted">${st}</p>${'Notification' in window && window.isSecureContext && Notification.permission === 'default' ? '<div class="row"><button class="btn primary" id="np-on">Turn on</button></div>' : ''}`);
+  el.querySelector('#np-on')?.addEventListener('click', () => Notification.requestPermission().then(() => notifyPane()));
+}
+function openSettings(key = (['hmap', 'office'].includes(localStorage.setKey) ? 'backups' : localStorage.setKey) || 'appearance', render = null) {
+  closeModal(true);
+  setTimeout(() => {
+    const el = modal(`<div class="set-wrap"><nav class="set-nav" aria-label="Settings"><div class="set-title"><b>Settings</b><button class="icon-btn" data-set-close aria-label="Close">${ICON.close}</button></div>
+      ${SET_NAV.map(([g, items]) => `<small>${g}</small>${items.map(([k, l, ic]) => `<button data-set="${k}">${ic}<span>${l}</span></button>`).join('')}`).join('')}
+      <button class="set-out" data-set-logout>${ICON.close}<span>Log out</span></button></nav><div class="set-body" id="set-body"></div></div>`, { wide: true, cls: 'set-modal' });
+    const go = (k, fn = null) => {
+      const item = SET_NAV.flatMap(([, i]) => i).find((i) => i[0] === k) || SET_NAV[1][1][0];
+      if (!['hmap', 'office'].includes(item[0])) localStorage.setKey = item[0];
+      el.querySelectorAll('[data-set]').forEach((b) => b.classList.toggle('on', b.dataset.set === item[0]));
+      MODAL_HOST = el.querySelector('#set-body'); MODAL_HOST.innerHTML = '<p class="muted">Loading…</p>';
+      (fn || item[3])();
+    };
+    el.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-set]'); if (b) return go(b.dataset.set);
+      if (e.target.closest('[data-set-close]')) return closeModal(true);
+      if (e.target.closest('[data-set-logout]')) { await api('/api/logout', { method: 'POST' }); location.href = '/login'; }
+    });
+    SET_GO = (k) => go(k); go(key, render);
+  }, 0);
+}

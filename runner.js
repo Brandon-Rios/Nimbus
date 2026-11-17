@@ -1,3 +1,5 @@
+// Runs bots: starts Claude Code for each message (one run at a time per chat, a few chats at once), streams its steps
+// into the chat as a live trace, handles approvals, queues, time and usage limits, and hand-offs between bots.
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -179,7 +181,7 @@ function codeStep(tool, input = {}, cwd) {
   if (tool === 'Edit') return { file: rel(input.file_path), diff: [{ old: cut(input.old_string), new: cut(input.new_string) }] };
   if (tool === 'MultiEdit') return { file: rel(input.file_path), diff: (input.edits || []).slice(0, 6).map((e) => ({ old: cut(e.old_string), new: cut(e.new_string) })) };
   if (tool === 'Write') return { file: rel(input.file_path), diff: [{ old: '', new: cut(input.content) }] };
-  if (tool === 'Bash') return { cmd: cut(input.command).slice(0, 500) };
+  if (tool === 'Bash') return { cmd: redact(String(input.command ?? '')).slice(0, 4000) };
   return {};
 }
 const toolText = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => x.text || '').join('\n') : '');
@@ -251,8 +253,32 @@ function mcpServers(botId, remote = false) {
 }
 
 // ---------- the main thing: run a bot ----------
+export const isUserSource = (s) => s === 'user' || s === 'the user';
+// Smart routing (Settings → Server → Model routing): routines, watchdog wake-ups, hand-offs and requests from
+// other bots can run on a lighter model, and so can short plain questions from you. Off unless set.
+export function routedModel(bot, source, prompt) {
+  if (source === 'auto-compact') return null;
+  const auto = getSetting('route_auto') || '', short = getSetting('route_short') || '';
+  if (!isUserSource(source)) return auto || null;
+  const p = String(prompt || '').trim();
+  if (short && p.length <= 160 && !/[\n`{}<>|$]/.test(p) && !/^\//.test(p) && !/\b(fix|debug|install|configure|build|write|deploy|migrate|delete|refactor)\b/i.test(p)) return short;
+  return null;
+}
+export const runGuards = []; // (botId, source) -> reason to skip, or null
+export const afterRun = []; // ({ botId, thread, msg, depth, source, runId }) after a reply is posted
 export function runBot({ botId, thread, prompt, depth = 0, source = 'user', parentRun = null, quiet = false, msgId = null, msgText = '', voice = null }) {
   botId = Number(botId);
+  // "Plan first" (composer toggle): the bot only plans; you approve the plan once, then it runs it.
+  if (/^\[Plan first\]/.test(prompt)) prompt += `\n\n(PLAN FIRST: do not change anything yet. Look around read-only if you need to, then reply with a short numbered plan and every command you will run, exactly, in \`\`\`sh blocks, one command per line. End your reply with the line PLAN_READY. The user approves the plan with one click; then you carry it out.)`;
+  // Guards (extras.js: weekly budget per bot) can refuse runs that aren't the user's own messages.
+  for (const g of runGuards) {
+    const why = isUserSource(source) || source === 'auto-compact' ? null : g(botId, source);
+    if (why) {
+      const r = q('INSERT INTO runs (bot_id, thread, prompt, status, parent_run, ended_at) VALUES (?,?,?,?,?,unixepoch())').run(botId, thread, redact(prompt), 'error', parentRun);
+      addMessage(thread, 'system', 'note', why);
+      return Number(r.lastInsertRowid);
+    }
+  }
   const busy = !!q("SELECT 1 FROM runs WHERE bot_id=? AND thread=? AND status IN ('running','queued')").get(botId, thread) || (active.get(botId) || 0) >= threadLimit();
   const run = q('INSERT INTO runs (bot_id, thread, prompt, status, parent_run) VALUES (?,?,?,?,?)').run(botId, thread, redact(prompt), 'queued', parentRun);
   const runId = Number(run.lastInsertRowid);
@@ -407,15 +433,16 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
       '--settings', JSON.stringify(settings)];
     const mcp = mcpServers(botId, remote);
     if (Object.keys(mcp).length) args.push('--mcp-config', JSON.stringify({ mcpServers: mcp }));
-    if (voice === 'fast') args.push('--model', 'haiku'); else if (bot.model) args.push('--model', bot.model);
+    const routed = voice === 'fast' ? 'haiku' : routedModel(bot, source, prompt);
+    if (routed) args.push('--model', routed); else if (bot.model) args.push('--model', bot.model);
     if (session) args.push('--resume', session);
-    if (ct) { args.push('--add-dir', ownDir); try { await Code.checkpointBefore(runId, thread); } catch {} }
+    if (ct) { args.push('--add-dir', ownDir); try { await Code.checkpointBefore(runId, thread); } catch (e) { console.error('checkpoint before run', runId, e.message); } }
 
     q("UPDATE runs SET status='running', started_at=unixepoch(), effort=? WHERE id=?").run(bot.effort, runId);
     if (q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='running'").get(botId).n > 1) refreshStatus(botId);
     else setStatus(botId, 'working', isRoom ? 'Working in a group chat' : 'Working…');
 
-    const traceBody = { steps: [], status: 'running', effort: bot.effort, started: Date.now(), source, compacting };
+    const traceBody = { steps: [], status: 'running', effort: bot.effort, started: Date.now(), source, compacting, ...(routed && voice !== 'fast' ? { routed } : {}) };
     // Context window size isn't known until Claude Code finishes; use the last one seen in this chat so the
     // live "ctx %" is right (a 1M-token model would otherwise show as 100% of a guessed 200k).
     try {
@@ -480,7 +507,7 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
             if (block.type === 'tool_use') {
               const step = { id: block.id, tool: block.name, text: summarizeTool(block.name, block.input), state: 'running' };
               // Code threads keep before/after and commands; other chats keep before/after of edits for the diff view.
-              if (ct || /^(Edit|MultiEdit|Write)$/.test(block.name)) Object.assign(step, codeStep(block.name, block.input, cwd));
+              if (ct || /^(Edit|MultiEdit|Write|Bash)$/.test(block.name)) Object.assign(step, codeStep(block.name, block.input, cwd));
               toolsById.set(block.id, step);
               traceBody.steps.push(step);
               updateMessage(traceMsg.id, traceBody);
@@ -557,6 +584,7 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
       const msg = allClear
         ? addMessage(thread, botId, 'quiet', reply.replace(/^\s*ALL_CLEAR\b[\s:—-]*/, '').trim() || 'All clear', runId)
         : addMessage(thread, botId, isError || (code !== 0 && !stopped) ? 'error' : 'text', reply, runId);
+      for (const h of afterRun) { try { h({ botId, thread, msg, depth, source, runId, stopped }); } catch (e) { console.error('afterRun', e.message); } }
 
       // Auto-compact: when this chat's context passes the threshold, compact it now (between messages),
       // so the next reply is fast and nothing earlier gets cut off. Setting: Server settings → Auto-compact.

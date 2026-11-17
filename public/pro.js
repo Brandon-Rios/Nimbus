@@ -40,29 +40,6 @@ async function flushOutbox() {
 addEventListener('online', () => flushOutbox());
 setTimeout(flushOutbox, 3000);
 
-// ---------- settings page ----------
-const SETTINGS = [
-  ['general', 'General', [['language', 'Language', 'Interface language and the language bots reply in.'], ['notify', 'Notifications', 'Browser and phone alerts for approvals and replies.']]],
-  ['appearance', 'Appearance', [['appearance', 'Theme and layout', 'Colors, light or dark, text size, sidebar.']]],
-  ['account', 'Account & security', [['claude', 'Claude account', 'The Claude plan Nimbus runs on.'], ['mfa', 'Two-factor authentication', 'A code from your phone when you sign in.'], ['logout', 'Log out', 'Sign out on this device.']]],
-  ['server', 'Server', [['server', 'Server settings', 'Network, guard, sandbox, limits.'], ['pro-status', 'System status', 'Services, disk, memory, uptime.'], ['log', 'Activity log', 'Everything bots did, newest first.']]],
-  ['usage', 'Usage', [['pro-usage', 'Usage history', 'Runs and cost per bot per day.']]],
-  ['help', 'Help', [['shortcuts', 'Keyboard shortcuts', 'See and change them. Press ? anywhere.'], ['pro-tour', 'Take the tour', 'A quick walk through Nimbus.'], ['pro-new', 'What’s new', 'Recent changes to this Nimbus.'], ['docs', 'Documents', 'Live documents your bots wrote.']]],
-];
-export function settingsPage(sec = localStorage.setSec || 'general') {
-  const el = X.modal(`<div class="set-wrap"><nav class="set-nav"><h3>Settings</h3>${SETTINGS.map(([k, l]) => `<button data-set-sec="${k}" class="${k === sec ? 'on' : ''}">${l}</button>`).join('')}</nav>
-    <div class="set-body"></div></div>`, { wide: true, cls: 'set-modal' });
-  const draw = (k) => {
-    localStorage.setSec = k;
-    const [, label, items] = SETTINGS.find((s) => s[0] === k) || SETTINGS[0];
-    el.querySelectorAll('[data-set-sec]').forEach((b) => b.classList.toggle('on', b.dataset.setSec === k));
-    el.querySelector('.set-body').innerHTML = `<div class="set-head"><h2>${label}</h2><button class="icon-btn" data-close aria-label="Close">${X.ICON.close}</button></div>
-      ${items.map(([act, name, desc]) => `<button class="set-row" data-act="${act}"><span><b>${name}</b><small>${desc}</small></span><span class="chev">›</span></button>`).join('')}`;
-  };
-  draw(sec);
-  el.addEventListener('click', (e) => { const b = e.target.closest('[data-set-sec]'); if (b) draw(b.dataset.setSec); if (e.target.closest('[data-close]')) X.closeModal(); });
-}
-
 // ---------- usage page ----------
 export async function usagePage(days = 14) {
   const el = X.modal(`<div class="modal-head"><h2>Usage history</h2><button class="icon-btn" data-close aria-label="Close">${X.ICON.close}</button></div><div class="pu-body"><p class="muted">Loading…</p></div>`, { wide: true, cls: 'pu-modal' });

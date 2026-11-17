@@ -286,6 +286,28 @@ export function officeUpgrade(req, socket, head) {
 }
 
 // ---------- routes ----------
+// Deletes uploads for good: their files, the bots' chat copies, and their place in the chat's Files.
+export function deleteUploads(ids, threadBot) {
+  // Same-name attachments are versions of one chat file (pasted images are all "image.png"): drop just this
+  // version and point the file at the previous one; the file goes only when no version is left.
+  ids = ids.filter((id) => /^[a-f0-9]{24}$/.test(String(id))); const copies = [];
+  db.exec('BEGIN');
+  try {
+    for (const id of ids) {
+      const v = q('SELECT doc_id FROM file_versions WHERE upload_id=?').get(id);
+      q('DELETE FROM file_versions WHERE upload_id=?').run(id);
+      const d = v && q('SELECT * FROM file_docs WHERE id=?').get(v.doc_id);
+      if (!d || d.latest !== id) continue;
+      const prev = q('SELECT upload_id FROM file_versions WHERE doc_id=? ORDER BY version DESC LIMIT 1').get(d.id);
+      if (prev) q('UPDATE file_docs SET latest=? WHERE id=?').run(prev.upload_id, d.id); else q('DELETE FROM file_docs WHERE id=?').run(d.id);
+      const bid = threadBot(d.thread); // the bot's copy; an older version is copied back on its next turn
+      if (bid) copies.push(path.join(botDir(bid), 'chats', threadKey(d.thread), safeName(d.name)));
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  for (const f of [...ids.map((id) => path.join(UPLOADS, id)), ...copies]) try { fs.rmSync(f, { recursive: true, force: true }); } catch (e) { console.error('delete file', f, e.message); }
+}
+
 export function registerFiles(route, { json, body, broadcast, addNote }) {
   const docOr403 = (req, res, id) => {
     const doc = getDoc(id);

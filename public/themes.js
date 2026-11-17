@@ -29,6 +29,11 @@ export const THEMES = {
   gnome: t('GNOME Adwaita', 'light', '#3584e4', '#fafafa #ebebeb #f6f5f4 #ffffff #e6e6e6 #dcdcdc #e0e0e0 #cdc7c2 #2e3436 #5e5c64 #9a9996 #f0f0f0 #3584e4 #ffffff #ececec #e0e0e0 #3584e4 #ffffff', 'gnome'),
   breeze: t('KDE Breeze', 'dark', '#3daee9', '#1b1e20 #232629 #2a2e32 #31363b #3a4045 #3daee933 #3a4045 #4d5257 #fcfcfc #a1a9b1 #6e757c #31363b #3daee9 #ffffff #31363b #3a4045 #3daee9 #ffffff', 'breeze'),
   mint: t('Linux Mint', 'dark', '#8bb158', '#2b2b2b #303030 #353535 #383838 #404040 #4a5a36 #404040 #505050 #e6e6e6 #a8a8a8 #747474 #383838 #8bb158 #1b1b1b #3a3a3a #454545 #8bb158 #1b1b1b', 'mint'),
+  macos9: t('Mac OS 9', 'light', '#6666cc', '#dddddd #d4d4d4 #dddddd #ffffff #e4e4f4 #ccccff #a4a4a4 #666666 #000000 #3a3a3a #777777 #ffffff #ccccff #000000 #eeeeee #e2e2e2 #6666cc #ffffff', 'macos9'),
+  beos: t('BeOS', 'light', '#336698', '#336698 #d8d8d8 #e0e0e0 #ffffff #cfcfcf #ffcb00 #a8a8a8 #6e6e6e #000000 #3d3d3d #777777 #ffffff #ffcb00 #000000 #e8e8e8 #d6d6d6 #336698 #ffffff', 'beos'),
+  nextstep: t('NeXTSTEP', 'light', '#000000', '#555555 #aaaaaa #aaaaaa #c4c4c4 #bcbcbc #ffffff #6b6b6b #000000 #000000 #2e2e2e #555555 #c4c4c4 #000000 #ffffff #aaaaaa #bdbdbd #000000 #ffffff', 'next'),
+  amiga: t('Amiga Workbench', 'dark', '#ff8800', '#0055aa #0055aa #0055aa #0b60b5 #1a6cc0 #ff8800 #ffffff66 #ffffff #ffffff #e2ebff #b3c8ec #0b60b5 #ff8800 #000000 #0055aa #1a6cc0 #ff8800 #000000', 'amiga'),
+  copland: t('Copland OS', 'dark', '#4fb4ff', '#040a2a #050c33 #07103d #0a1548 #0e1c5c #13287a #1a2f7a #2a4aa8 #d8e8ff #8fb0e6 #5470b0 #0a1650 #2f6fe0 #ffffff #0c1a55 #12256f #5fd0ff #031033', 'copland'),
   terminal: t('Terminal', 'dark', '#33ff66', '#000000 #050805 #070b07 #0a100a #0f1a0f #123312 #134013 #1d5c1d #33ff66 #22bb4a #178a35 #071207 #33ff66 #000000 #0a170a #123312 #33ff66 #000000', 'term')
 };
 

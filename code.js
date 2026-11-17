@@ -8,10 +8,23 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { execFile, execFileSync, spawn } from 'node:child_process';
-import { db, q } from './db.js';
+import { db, q, Capped } from './db.js';
 import { broadcast } from './events.js';
 import { redact } from './redact.js';
 import { botDir } from './db.js';
+import { botEnv } from './sandbox.js';
+
+// Per-project settings for Nimbus Code (code2.js edits them): setup command for new branches, secrets/env vars,
+// tests after every turn, lint command.
+db.exec(`CREATE TABLE IF NOT EXISTS code_settings (project_id INTEGER PRIMARY KEY, setup_cmd TEXT DEFAULT '', env TEXT DEFAULT '{}', auto_test INTEGER DEFAULT 0, lint_cmd TEXT DEFAULT '')`);
+export const codeSettings = (projectId) => q('SELECT * FROM code_settings WHERE project_id=?').get(projectId) || { project_id: projectId, setup_cmd: '', env: '{}', auto_test: 0, lint_cmd: '' };
+// What code you run (tests, preview, terminal, setup) sees: the basics plus this project's own variables,
+// never the Nimbus server's environment (its password, tokens and keys).
+export function codeEnv(projectId, extra = {}) {
+  let own = {}; try { own = JSON.parse(codeSettings(projectId).env || '{}'); } catch (e) { console.error('code env of project', projectId, e.message); }
+  return botEnv({ ...own, ...extra }, null, false);
+}
+export const hooks = { threadReady: [], turnDone: [] };
 
 export const CODE_ROOT = path.resolve(process.env.NIMBUS_CODE_DIR || path.join(os.homedir(), 'code'));
 const BRANCHES = path.join(CODE_ROOT, '.branches');
@@ -96,6 +109,7 @@ export async function setupThread(threadId, ownBranch) {
   if (!(await tryGit(repo, ['rev-parse', '--verify', 'HEAD'])).trim()) await initRepo(repo);
   await git(repo, ['worktree', 'add', '-b', branch, dir, base]);
   q('UPDATE threads SET branch=?, worktree=?, base=? WHERE id=?').run(branch, dir, base, threadId);
+  for (const f of hooks.threadReady) try { f('t:' + threadId, dir, p); } catch (e) { console.error('threadReady', e.message); }
 }
 export async function removeThreadBranch(t, { deleteBranch = false } = {}) {
   const p = projectRow(t.project_id);
@@ -220,7 +234,7 @@ function attrRules(cwd, read) {
     return { re, a };
   });
 }
-const langCache = new Map();
+const langCache = new Capped(300);
 export function languages(cwd) {
   let head = ''; try { head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000 }).toString().trim(); } catch {}
   // Committed tree (like GitHub) with sizes in one call; before the first commit, the files on disk.
@@ -316,7 +330,9 @@ export async function checkpointAfter(runId) {
   await tryGit(cp.cwd, ['update-ref', `refs/nimbus/cp/${runId}-after`, sha]);
   q('UPDATE checkpoints SET after=? WHERE run_id=?').run(sha, runId);
   const files = num.split('\n').map((l) => { const [a, d, ...f] = l.split('\t'); return { file: f.join('\t'), add: a === '-' ? 0 : Number(a), del: d === '-' ? 0 : Number(d) }; });
-  return { runId, files, add: files.reduce((s, f) => s + f.add, 0), del: files.reduce((s, f) => s + f.del, 0) };
+  const r = { runId, files, add: files.reduce((s, f) => s + f.add, 0), del: files.reduce((s, f) => s + f.del, 0) };
+  for (const f of hooks.turnDone) try { f(runId, r); } catch (e) { console.error('turnDone', e.message); }
+  return r;
 }
 // Undo a turn: put back the files that turn touched, as they were before it (later edits to other files stay).
 export async function undoTurn(runId) {
@@ -353,7 +369,7 @@ export async function commit(key, message) {
   return { ok: true, message };
 }
 // The repo's own git identity if it has one, else "Nimbus".
-async function authorEnv(cwd) {
+export async function authorEnv(cwd) {
   const name = (await tryGit(cwd, ['config', 'user.name'])).trim(), email = (await tryGit(cwd, ['config', 'user.email'])).trim();
   return name && email ? { GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email } : {};
 }
@@ -384,7 +400,7 @@ export async function push(key) {
 }
 
 // ---------- tests ----------
-const testResults = new Map(); // thread -> { ok, code, out, at, cmd }
+const testResults = new Capped(300); // thread -> { ok, code, out, at, cmd }
 const testRuns = new Map();
 export function testCommand(cwd, p) {
   if (p?.test_cmd?.trim()) return p.test_cmd.trim();
@@ -405,7 +421,7 @@ export function runTests(key) {
   testResults.set(key, { running: true, cmd, at: started });
   broadcast('code_changed', { thread: key });
   return new Promise((resolve) => {
-    const p = spawn('bash', ['-lc', cmd], { cwd: path.join(c.cwd, det.dir), env: { ...process.env, CI: '1', FORCE_COLOR: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn('bash', ['-lc', cmd], { cwd: c.cwd, env: codeEnv(c.p.id, { CI: '1', FORCE_COLOR: '0' }), stdio: ['ignore', 'pipe', 'pipe'] });
     testRuns.set(key, p);
     let out = '';
     const add = (d) => { out += d; if (out.length > 200_000) out = out.slice(-150_000); };
@@ -487,7 +503,7 @@ export async function startPreview(key) {
   const det = detectPreview(c.cwd, c.p), cmd = det?.cmd;
   if (!cmd) throw Object.assign(new Error('No way to start this app found. Set a preview command in the project settings.'), { status: 400 });
   const port = await freePort();
-  const proc = spawn('bash', ['-lc', cmd], { cwd: path.join(c.cwd, det.dir), env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', BROWSER: 'none' }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  const proc = spawn('bash', ['-lc', cmd], { cwd: path.join(c.cwd, det.dir), env: codeEnv(c.p.id, { PORT: String(port), HOST: '127.0.0.1', BROWSER: 'none' }), stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   const v = { proc, port, cmd, why: det.why, dir: det.dir, out: '', started: Date.now(), proxyPort: null };
   const add = (d) => { v.out = (v.out + d).slice(-20000); };
   proc.stdout.on('data', add); proc.stderr.on('data', add);
@@ -514,10 +530,10 @@ export function stopAll() { for (const k of [...previews.keys()]) stopPreview(k)
 const terms = new Map(); // thread -> { proc, buf, listeners:Set }
 const PTY = path.join(path.dirname(new URL(import.meta.url).pathname), 'bin', 'term-pty.py');
 export function terminal(key) {
-  const c = workDir(key);
+  const c = workDir(key), tc = threadCode(key);
   let t = terms.get(key);
   if (t) return t;
-  const proc = spawn('/usr/bin/python3', [PTY], { cwd: c.cwd, env: { ...process.env, TERM: 'xterm-256color', PS1: '\\[\\e[36m\\]\\W\\[\\e[0m\\] $ ' }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
+  const proc = spawn('/usr/bin/python3', [PTY], { cwd: c.cwd, env: tc ? codeEnv(tc.p.id, { TERM: 'xterm-256color', PS1: '\\[\\e[36m\\]\\W\\[\\e[0m\\] $ ' }) : { ...botEnv({}, null, false), TERM: 'xterm-256color', PS1: '\\[\\e[36m\\]\\W\\[\\e[0m\\] $ ' }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
   t = { proc, buf: '', listeners: new Set(), idle: null };
   const out = (d) => { const s = d.toString('utf8'); t.buf = (t.buf + s).slice(-200_000); for (const l of t.listeners) l(s); };
   proc.stdout.on('data', out); proc.stderr.on('data', out);
@@ -541,15 +557,15 @@ export function changedSoon(key, file) {
 }
 
 // ---------- GitHub: link a repo, and its About box (description, stars, releases, contributors, languages) ----------
-const ghSlug = (remote) => { const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(remote || ''); return m ? `${m[1]}/${m[2]}` : null; };
+export const ghSlug = (remote) => { const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(remote || ''); return m ? `${m[1]}/${m[2]}` : null; };
 // The token comes from git's own credential helper (the same one git push uses); it never leaves the server.
-async function ghToken() {
+export async function ghToken() {
   return new Promise((res) => {
     const p = execFile('git', ['credential', 'fill'], { timeout: 5000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }, (err, out) => res(err ? null : (/^password=(.+)$/m.exec(out) || [])[1] || null));
     p.stdin.end('protocol=https\nhost=github.com\n\n');
   });
 }
-async function ghGet(pathname, token) {
+export async function ghGet(pathname, token) {
   const r = await fetch('https://api.github.com' + pathname, { headers: { accept: 'application/vnd.github+json', 'user-agent': 'Nimbus', ...(token ? { authorization: 'Bearer ' + token } : {}) }, signal: AbortSignal.timeout(10_000) });
   if (!r.ok) throw Object.assign(new Error(r.status === 404 ? 'Repo not found on GitHub (or no access)' : `GitHub said ${r.status}`), { status: r.status });
   return r.json();
@@ -583,7 +599,7 @@ export async function connectGithub(projectId, url) {
   ghCache.delete(ghSlug(url));
   return { url, branch: def, replaced: took };
 }
-const ghCache = new Map();
+const ghCache = new Capped(300);
 export async function githubAbout(key) {
   const c = threadCode(key); if (!c) throw Object.assign(new Error('Not a code thread'), { status: 404 });
   const slug = ghSlug((await tryGit(c.repo, ['remote', 'get-url', 'origin'])).trim());

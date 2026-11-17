@@ -5,7 +5,8 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node --no-warnings --env-file-if-exists=.env server.js"
+    "start": "node --no-warnings --env-file-if-exists=.env server.js",
+    "test": "node test/run.mjs"
   },
   "engines": {
     "node": ">=22.13"
