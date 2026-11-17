@@ -41,6 +41,8 @@ async function main() {
     catch { if (i > 20) out('deny', 'Nimbus server unreachable, so the approval check failed. Try again later.'); await sleep(3000); }
   }
   if (first.decision === 'allow') process.exit(0); // not gated
+  if (first.decision === 'deny') out('deny', first.reason || 'Nimbus: not allowed.'); // blocked outright (e.g. Nimbus's private data); no approval to wait for
+  if (!first.approvalId) out('deny', 'Nimbus: unexpected answer from the approval check.');
 
   // Gated: long-poll until the user decides.
   for (;;) {
