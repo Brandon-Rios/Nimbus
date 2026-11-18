@@ -14,7 +14,7 @@ import { redact } from './redact.js';
 import { botDir } from './db.js';
 import { botEnv } from './sandbox.js';
 
-// Per-project settings for Nimbus Code (code2.js edits them): setup command for new branches, secrets/env vars,
+// Per-project settings for Nimbus Code (codeide.js edits them): setup command for new branches, secrets/env vars,
 // tests after every turn, lint command.
 db.exec(`CREATE TABLE IF NOT EXISTS code_settings (project_id INTEGER PRIMARY KEY, setup_cmd TEXT DEFAULT '', env TEXT DEFAULT '{}', auto_test INTEGER DEFAULT 0, lint_cmd TEXT DEFAULT '')`);
 export const codeSettings = (projectId) => q('SELECT * FROM code_settings WHERE project_id=?').get(projectId) || { project_id: projectId, setup_cmd: '', env: '{}', auto_test: 0, lint_cmd: '' };

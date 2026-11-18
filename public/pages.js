@@ -2,7 +2,7 @@
 // message search, first-run tour, connection bar with an outbox, shortcut hints, phone tab bar and gestures.
 // Everything runs in the browser or on the Nimbus server: no Claude calls.
 let X = {};
-export function initPro(ctx) { X = ctx; whatsNewDot(); maybeTour(); tabBar(); }
+export function initPages(ctx) { X = ctx; whatsNewDot(); maybeTour(); tabBar(); }
 const $ = (s, r = document) => r.querySelector(s);
 const fmtB = (n) => (n > 1e12 ? (n / 1e12).toFixed(1) + ' TB' : n > 1e9 ? (n / 1e9).toFixed(1) + ' GB' : (n / 1e6).toFixed(0) + ' MB');
 const dur = (s) => { s = Math.max(0, Math.round(s)); const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60); return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`; };

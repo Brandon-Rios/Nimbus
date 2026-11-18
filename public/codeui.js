@@ -205,7 +205,7 @@ export async function codeProjectModal(p) {
 // ---------- the code panel ----------
 const pane = () => document.getElementById('codepane');
 // Workspace: several tools tiled side by side (terminal, changes, code, preview), like an IDE. Saved per device.
-// Extra tools from code2.js (pull request, issues, search, problems) plug in here.
+// Extra tools from codeide.js (pull request, issues, search, problems) plug in here.
 export const CODE_EXT = { tiles: [], body: null, mount: null, about: null, conflict: null, blame: null };
 const TILES = [['about', 'Overview'], ['terminal', 'Terminal'], ['changes', 'Changes'], ['files', 'Files'], ['preview', 'Browser'], ['commits', 'Commits'], ['tests', 'Tests'], ['pr', 'Pull request'], ['issues', 'Issues'], ['search', 'Search'], ['problems', 'Problems']];
 const WSC = { on: true, tiles: (localStorage.codeTiles2 || '').split(',').filter((t) => TILES.some(([k]) => k === t)), max: null };

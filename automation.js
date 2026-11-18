@@ -201,7 +201,7 @@ ${rows.some((r) => r.state === 'down') ? '<div class="all bad">Something is down
 <ul>${rows.map((r) => `<li><span>${r.name.replace(/[<>&]/g, '')}</span><span class="s ${r.state}">${r.state === 'up' ? '● Up' : r.state === 'down' ? '● Down' : '○ Checking'}</span></li>`).join('')}</ul></main></body></html>`;
 
 // ---------- routes ----------
-export function registerExtras(route, { json, body, postToThread }) {
+export function registerAutomation(route, { json, body, postToThread }) {
   postFn = postToThread;
   const int = (v) => (v === '' || v == null ? null : Number(v));
   const crud = (name, table, fields, clean = (x) => x) => {
@@ -304,7 +304,7 @@ export function registerExtras(route, { json, body, postToThread }) {
   });
 }
 
-export function startExtras() {
+export function startAutomation() {
   seed();
   setTimeout(sweep, 15000);
   setInterval(() => sweep().catch((e) => console.error('watchdog', e.message)), 120000).unref();

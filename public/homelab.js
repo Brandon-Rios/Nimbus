@@ -1,7 +1,7 @@
-// Screens for extras2.js: Backups, IP map, Change journal, Logs, Model routing (Settings), the Homelab map
+// Screens for homelab.js: Backups, IP map, Change journal, Logs, Model routing (Settings), the Homelab map
 // and the Bot office (full windows), plus the Plan first toggle. All local; buttons that ask a bot say so.
 let X;
-export function initExtras2(ctx) { X = ctx; }
+export function initHomelab(ctx) { X = ctx; }
 const $ = (s, r = document) => r.querySelector(s);
 const ago = (t) => { if (!t) return 'never'; const s = Math.max(0, Date.now() / 1000 - t); return s < 90 ? 'just now' : s < 5400 ? Math.round(s / 60) + ' min ago' : s < 129600 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago'; };
 const gb = (n) => (n >= 1e12 ? (n / 1e12).toFixed(1) + ' TB' : n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB' : Math.round((n || 0) / 1e6) + ' MB');

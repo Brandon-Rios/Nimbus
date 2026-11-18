@@ -268,7 +268,7 @@ async function branchSummary(key) {
 }
 
 // ---------- routes ----------
-export function registerCode2(route, { json, body, postToThread }) {
+export function registerCodeIde(route, { json, body, postToThread }) {
   const T = (fn) => async (req, res, p, url) => { try { json(res, 200, await fn(decodeURIComponent(p.thread || ''), req, url, p)); } catch (e) { json(res, e.status || 500, { error: e.message }); } };
   route('GET', '/api/code2/project/:id/settings', (req, res, p) => json(res, 200, getSettings(Number(p.id))));
   route('PUT', '/api/code2/project/:id/settings', async (req, res, p) => { try { json(res, 200, putSettings(Number(p.id), await body(req))); } catch (e) { json(res, e.status || 500, { error: e.message }); } });

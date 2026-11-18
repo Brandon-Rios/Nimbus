@@ -1,7 +1,7 @@
 // Ideas from the AI labs, done the Nimbus way:
 // smart auto-approve (local rules, optional Haiku check), rewind a chat to a message (files + conversation),
 // weekly self-review ("dreaming": bots suggest memory lines from their own failures), a shared skills library,
-// and custom MCP connectors. Voice mode and the camera are client-side (public/extras3.js).
+// and custom MCP connectors. Voice mode and the camera are client-side (public/aitools.js).
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,7 +14,7 @@ import { claudeEnv } from './claudeauth.js';
 import { broadcast } from './events.js';
 import { builtIn } from './threads.js';
 import { PLUGINS } from './catalog.js';
-import { undoJournal } from './extras2.js';
+import { undoJournal } from './homelab.js';
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS auto_approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, bot_id INTEGER, thread TEXT, tool TEXT, input TEXT,
@@ -258,7 +258,7 @@ function mcpConfig(b) {
 }
 
 // ---------- routes ----------
-export function registerExtras3(route, { json, body }) {
+export function registerAiTools(route, { json, body }) {
   const fail = (res, e) => json(res, e.status || 500, { error: e.message });
   route('GET', '/api/extras/auto-approve', (req, res) => json(res, 200, { mode: autoMode(),
     log: q('SELECT a.*, b.name AS bot FROM auto_approvals a LEFT JOIN bots b ON b.id=a.bot_id ORDER BY a.id DESC LIMIT 100').all(),
@@ -341,7 +341,7 @@ export function registerExtras3(route, { json, body }) {
   });
 }
 
-export function startExtras3() {
+export function startAiTools() {
   loadCustom();
   try { fs.mkdirSync(SKILLS, { recursive: true }); seedSkills(); syncSkills(); } catch (e) { console.error('skills', e.message); }
   setInterval(() => { dreamSweep(); syncSkills(); }, 10 * 60000).unref();

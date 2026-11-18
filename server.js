@@ -20,17 +20,19 @@ import { claudeEnv, claudeStatus, setClaudeToken, TOKEN_RE } from './claudeauth.
 import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport, cancelQueued, editQueued, threadLimit, projectBots } from './runner.js';
 import * as TH from './threads.js';
 import * as Code from './code.js';
+import { createGate, rememberRule } from './gate.js';
+import { registerSpeech } from './speech.js';
 import { botCommands } from './slash.js';
 import { loadTools, approveTool, runTool, SCAN_PROMPT } from './apitools.js';
 import { ensureBrowser, watchBrowser, browserInput, closeBrowser } from './browser.js';
 import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
 import { startScheduler, nextRun, isValidCron } from './scheduler.js';
 import { getPlanUsage, getModels } from './planusage.js';
-import { registerPro } from './pro.js';
-import { registerExtras, startExtras, moods } from './extras.js';
-import { registerExtras2, startExtras2, journalBefore, planAllows } from './extras2.js';
-import { registerExtras3, startExtras3, autoApprove } from './extras3.js';
-import { registerCode2, PROBE } from './code2.js';
+import { registerPages } from './pages.js';
+import { registerAutomation, startAutomation, moods } from './automation.js';
+import { registerHomelab, startHomelab, journalBefore, planAllows } from './homelab.js';
+import { registerAiTools, startAiTools, autoApprove } from './aitools.js';
+import { registerCodeIde, PROBE } from './codeide.js';
 import { pluginCatalog, setPlugin } from './ccplugins.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -45,43 +47,11 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 recoverRuns();
 startScheduler();
-startExtras();
-startExtras2();
-startExtras3();
+startAutomation();
+startHomelab();
+startAiTools();
 
 // ---------- approvals ----------
-function globToRe(glob) {
-  return new RegExp('^' + glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'is');
-}
-function toolArg(input = {}) {
-  return String(input.command ?? input.file_path ?? input.url ?? JSON.stringify(input));
-}
-function ruleMatches(rule, tool, input) {
-  const m = rule.match(/^([^(]+)\((.*)\)$/s);
-  if (m) return globToRe(m[1].trim()).test(tool) && globToRe(m[2]).test(toolArg(input));
-  return globToRe(rule.trim()).test(tool);
-}
-// "@self-email" in a bot's Always-allow rules lets it send email only to the Nimbus owner's own
-// addresses (NIMBUS_ALLOWED_EMAILS) without asking; mail to anyone else still waits for approval.
-function isSelfEmail(tool, input = {}) {
-  if (!/Gmail__(send_message|create_draft)$/i.test(tool)) return false;
-  const list = (v) => (Array.isArray(v) ? v : v ? String(v).split(',') : []).map((x) => String(x).replace(/^.*<|>.*$/g, '').trim().toLowerCase()).filter(Boolean);
-  const all = [...list(input.to), ...list(input.cc), ...list(input.bcc)];
-  return all.length > 0 && all.every((e) => ALLOWED_EMAILS.includes(e));
-}
-// The rule "Always allow" saves: the exact command, or a prefix pattern of its first words.
-function rememberRule(tool, input, kind) {
-  if (tool !== 'Bash') return tool;
-  const cmd = String(input.command || '').trim();
-  if (kind !== 'pattern') return `Bash(${cmd})`;
-  return `Bash(${commandPrefix(cmd)}*)`;
-}
-function commandPrefix(cmd) {
-  const words = cmd.split(/\s+/);
-  const keep = [];
-  for (const w of words) { if (keep.length >= 2 || /^[-'"$|;&><]/.test(w)) break; keep.push(w); }
-  return (keep.join(' ') || words[0]) + ' ';
-}
 const waiters = new Map(); // approvalId -> Set(resolve)
 function notifyApproval(id) {
   for (const fn of waiters.get(id) || []) fn();
@@ -476,11 +446,9 @@ route('GET', '/api/models', async (req, res) => json(res, 200, await getModels(c
 // Files in a chat: versions, previews (files.js).
 registerFiles(route, { json, body, broadcast, addNote: (thread, text, files) => addMessage(thread, 'system', 'note', text, null, files) });
 
-registerPro(route, { json, q, DATA_DIR });
-registerExtras(route, { json, body, postToThread });
-registerExtras2(route, { json, body, postToThread, pveGet, pveConfig });
-registerExtras3(route, { json, body });
-registerCode2(route, { json, body, postToThread });
+// Feature modules all get the same context and add their own routes.
+const featureCtx = { json, body, q, DATA_DIR, broadcast, postToThread, pveGet, pveConfig };
+for (const register of [registerSpeech, registerPages, registerAutomation, registerHomelab, registerAiTools, registerCodeIde]) register(route, featureCtx);
 
 // Restart the service once no bot is mid-run (a restart kills running bots, including one that asked for it).
 // Needs a sudoers rule letting this user run `systemctl restart nimbus`.
@@ -710,7 +678,7 @@ const PREVIEW_BASE = Number(process.env.NIMBUS_PREVIEW_PORT || 8900);
 Code.setPreviewProxy(async (target) => {
   const handler = (req, res) => {
     if (!loggedIn(req)) { res.writeHead(401, { 'content-type': 'text/plain' }); return res.end('Log in to Nimbus first.'); }
-    // Nimbus's probe (code2.js) reports the page's console errors and failed requests to the code panel, and lets you pick an element.
+    // Nimbus's probe (codeide.js) reports the page's console errors and failed requests to the code panel, and lets you pick an element.
     if (req.url === '/__nimbus_probe.js') { res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' }); return res.end(PROBE); }
     const up = http.request({ host: '127.0.0.1', port: target(), path: req.url, method: req.method, headers: { ...req.headers, host: `127.0.0.1:${target()}`, 'accept-encoding': 'identity' } }, (r) => {
       const h = { ...r.headers }; delete h['x-frame-options']; delete h['content-security-policy'];
@@ -1142,94 +1110,7 @@ route('GET', '/api/proxmox', async (req, res) => {
 // ---------- Claude plan usage (planusage.js) ----------
 route('GET', '/api/plan-usage', async (req, res) => json(res, 200, await getPlanUsage()));
 
-// ---------- read aloud (Piper, local text-to-speech) ----------
-// Turns a bot reply into speech on this server; nothing leaves the network.
-const PIPER_BIN = process.env.NIMBUS_PIPER_BIN || path.join(os.homedir(), 'opt/piper/piper');
-const PIPER_VOICE = process.env.NIMBUS_PIPER_VOICE || path.join(os.homedir(), 'opt/piper-voices/en_US-lessac-medium.onnx');
-// Markdown and links read badly, so speak plain text.
-const speakable = (t) => String(t || '').replace(/```[\s\S]*?```/g, ' (code omitted) ').replace(/`([^`]+)`/g, '$1')
-  .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/https?:\/\/\S+/g, 'a link').replace(/[*_#>|]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 6000);
-// Kokoro: natural-sounding voices, run as a local service (bin/kokoro-server.py) that keeps the model loaded.
-const KOKORO_PY = process.env.NIMBUS_KOKORO_PY || path.join(os.homedir(), 'opt/kokoro-py/bin/python');
-const KOKORO_DIR = process.env.NIMBUS_KOKORO_DIR || path.join(os.homedir(), 'opt/kokoro');
-const KOKORO_PORT = Number(process.env.NIMBUS_KOKORO_PORT || 8179);
-let kokoroProc = null, kokoroFails = 0;
-function startKokoro() {
-  const model = path.join(KOKORO_DIR, 'kokoro-v1.0.onnx'), voices = path.join(KOKORO_DIR, 'voices-v1.0.bin');
-  if (!fs.existsSync(KOKORO_PY) || !fs.existsSync(model) || !fs.existsSync(voices)) return;
-  kokoroProc = spawn(KOKORO_PY, ['-I', path.join(HERE, 'bin/kokoro-server.py'), model, voices, String(KOKORO_PORT)], { stdio: 'ignore' });
-  kokoroProc.on('exit', () => { kokoroProc = null; if (++kokoroFails <= 5) setTimeout(startKokoro, 5000 * kokoroFails); });
-  setTimeout(() => { kokoroFails = 0; }, 60_000).unref();
-}
-startKokoro();
-process.on('exit', () => kokoroProc?.kill());
-const KOKORO_VOICES = { af_heart: 'Heart', af_bella: 'Bella', af_nicole: 'Nicole', af_sarah: 'Sarah', af_sky: 'Sky', af_nova: 'Nova', af_jessica: 'Jessica', af_river: 'River', af_aoede: 'Aoede', af_kore: 'Kore', af_alloy: 'Alloy',
-  am_michael: 'Michael', am_adam: 'Adam', am_eric: 'Eric', am_liam: 'Liam', am_onyx: 'Onyx', am_echo: 'Echo', am_fenrir: 'Fenrir', am_puck: 'Puck',
-  bf_emma: 'Emma', bf_isabella: 'Isabella', bf_alice: 'Alice', bf_lily: 'Lily', bm_george: 'George', bm_daniel: 'Daniel', bm_lewis: 'Lewis', bm_fable: 'Fable',
-  ef_dora: 'Dora', em_alex: 'Alex', ff_siwis: 'Siwis', hf_alpha: 'Alpha', hf_beta: 'Beta', hm_omega: 'Omega', hm_psi: 'Psi', if_sara: 'Sara', im_nicola: 'Nicola',
-  jf_alpha: 'Alpha', jf_gongitsune: 'Gongitsune', jf_nezumi: 'Nezumi', jf_tebukuro: 'Tebukuro', jm_kumo: 'Kumo', pf_dora: 'Dora', pm_alex: 'Alex',
-  zf_xiaobei: 'Xiaobei', zf_xiaoni: 'Xiaoni', zf_xiaoxiao: 'Xiaoxiao', zf_xiaoyi: 'Xiaoyi', zm_yunjian: 'Yunjian', zm_yunxi: 'Yunxi', zm_yunxia: 'Yunxia', zm_yunyang: 'Yunyang' };
-const KOKORO_LANG = { a: 'American', b: 'British', e: 'Spanish', f: 'French', h: 'Hindi', i: 'Italian', j: 'Japanese', p: 'Portuguese', z: 'Chinese' };
-const kokoroVoices = () => kokoroProc ? Object.entries(KOKORO_VOICES).map(([v, n]) => ({ id: 'kokoro:' + v, name: `${n} (${KOKORO_LANG[v[0]]} ${v[1] === 'f' ? 'woman' : 'man'})`, group: 'ab'.includes(v[0]) ? 'Natural (Kokoro)' : 'Natural, other languages (Kokoro)' })) : [];
-
-// Voices: every Piper model in the voices folder; each bot can pick one (setting bot_voices = { botId: voiceId }).
-const VOICE_DIR = path.dirname(PIPER_VOICE);
-const ACCENT = { en_US: 'American', en_GB: 'British', de_DE: 'German', ru_RU: 'Russian', nl_NL: 'Dutch', pl_PL: 'Polish', uk_UA: 'Ukrainian', sv_SE: 'Swedish', tr_TR: 'Turkish', vi_VN: 'Vietnamese' };
-function listVoices() {
-  try {
-    return fs.readdirSync(VOICE_DIR).filter((f) => f.endsWith('.onnx')).map((f) => {
-      const id = f.slice(0, -5), [lang, who = '', quality = ''] = id.split('-');
-      const name = who.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).replace(/^Hfc /, 'HFC ');
-      return { id, name: `${name} (${ACCENT[lang] || lang}${quality === 'high' ? ', high quality' : ''})`, lang, group: lang.startsWith('en') ? 'Basic (Piper)' : 'Basic, other languages (Piper)' };
-    }).sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
-  } catch { return []; }
-}
-function allVoices() { return [...kokoroVoices(), ...listVoices()];
-}
-const botVoices = () => JSON.parse(getSetting('bot_voices') || '{}');
-function voiceFile(id) {
-  const f = path.join(VOICE_DIR, String(id || '').replace(/[^\w.-]/g, '') + '.onnx');
-  return id && fs.existsSync(f) ? f : PIPER_VOICE;
-}
-route('GET', '/api/voices', (req, res) => json(res, 200, { voices: allVoices(), default: path.basename(PIPER_VOICE, '.onnx'), byBot: botVoices() }));
-route('PUT', '/api/bots/:id/voice', async (req, res, p) => {
-  const { voice } = await body(req);
-  const all = botVoices();
-  if (voice && allVoices().some((v) => v.id === voice)) all[Number(p.id)] = voice; else delete all[Number(p.id)];
-  setSetting('bot_voices', JSON.stringify(all));
-  json(res, 200, { ok: true });
-});
-route('GET', '/api/speak', (req, res) => json(res, 200, { available: fs.existsSync(PIPER_BIN) && fs.existsSync(PIPER_VOICE) }));
-route('POST', '/api/speak', async (req, res) => {
-  if (!fs.existsSync(PIPER_BIN) || !fs.existsSync(PIPER_VOICE)) return json(res, 503, { error: 'Read-aloud isn’t installed on the server' });
-  const { messageId, text, voice, botId } = await body(req);
-  const row = messageId ? q('SELECT body, author FROM messages WHERE id=?').get(Number(messageId)) : null;
-  const src = row ? row.body : text;
-  // Preview passes a voice; otherwise the bot who wrote the message (or the bot asked for) speaks in its own voice.
-  const chosen = voice || botVoices()[Number(botId || row?.author)];
-  const say = speakable(src);
-  if (!say) return json(res, 400, { error: 'Nothing to read' });
-  if (String(chosen).startsWith('kokoro:') && kokoroProc) {
-    try {
-      const r = await fetch(`http://127.0.0.1:${KOKORO_PORT}/`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: say, voice: chosen.slice(7) }), signal: AbortSignal.timeout(120_000) });
-      if (r.ok) { const wav = Buffer.from(await r.arrayBuffer()); res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': wav.length, 'cache-control': 'no-store' }); return res.end(wav); }
-    } catch {} // Kokoro is still loading or failed: fall back to Piper below
-  }
-  const model = voiceFile(String(chosen || '').startsWith('kokoro:') ? '' : chosen);
-  const p = spawn(PIPER_BIN, ['--model', model, '--output_file', '-'], { stdio: ['pipe', 'pipe', 'ignore'] });
-  const chunks = [];
-  p.stdout.on('data', (c) => chunks.push(c));
-  p.on('error', (e) => { if (!res.headersSent) json(res, 500, { error: e.message }); });
-  p.on('close', (code) => {
-    if (res.headersSent) return;
-    if (code !== 0 || !chunks.length) return json(res, 500, { error: 'Speech failed' });
-    const wav = Buffer.concat(chunks);
-    res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': wav.length, 'cache-control': 'no-store' });
-    res.end(wav);
-  });
-  p.stdin.end(say);
-});
-
+// ---------- read aloud, dictation, translation: speech.js ----------
 // ---------- backups (bin/backup.mjs) ----------
 // Nightly at 03:15 local time, plus "Back up now" in Server settings. The last result is kept in settings.
 let backupRunning = false;
@@ -1297,125 +1178,6 @@ route('GET', '/api/activity', (req, res, _p, url) => {
   json(res, 200, { runs, approvals });
 });
 
-// ---------- voice dictation (whisper.cpp) ----------
-// Nimbus runs whisper.cpp's server as a child process on localhost only. The browser records 16 kHz
-// WAV, so no audio conversion is needed here. Recordings are never written to disk.
-const WHISPER_BIN = process.env.NIMBUS_WHISPER_BIN || path.join(os.homedir(), 'opt/whisper.cpp/build/bin/whisper-server');
-const WHISPER_MODEL = process.env.NIMBUS_WHISPER_MODEL || path.join(os.homedir(), 'opt/whisper-models/ggml-small.en.bin');
-const WHISPER_PORT = Number(process.env.NIMBUS_WHISPER_PORT || 8178);
-// Speech language (setting speech_lang): '' = English (faster English-only model); 'auto' or a language code uses the multilingual model.
-const WHISPER_MULTI = process.env.NIMBUS_WHISPER_MULTI || path.join(path.dirname(WHISPER_MODEL), 'ggml-small.bin');
-const speechLang = () => getSetting('speech_lang') || '';
-const whisperModel = () => speechLang() && fs.existsSync(WHISPER_MULTI) ? WHISPER_MULTI : WHISPER_MODEL;
-let whisperProc = null, whisperFails = 0;
-function startWhisper() {
-  if (!fs.existsSync(WHISPER_BIN) || !fs.existsSync(WHISPER_MODEL)) return;
-  whisperProc = spawn(WHISPER_BIN, ['-m', whisperModel(), '--host', '127.0.0.1', '--port', String(WHISPER_PORT), '-t', String(Math.max(2, os.cpus().length - 2))], { stdio: 'ignore' });
-  whisperProc.on('exit', () => {
-    whisperProc = null;
-    if (++whisperFails <= 5) setTimeout(startWhisper, 5000 * whisperFails); // crashed: retry with backoff
-  });
-  setTimeout(() => { whisperFails = 0; }, 60_000).unref();
-}
-startWhisper();
-process.on('exit', () => whisperProc?.kill());
-route('GET', '/api/transcribe', (req, res) => json(res, 200, { available: !!whisperProc }));
-// Language settings: what dictation listens for, and what language bots reply in (both shared by all devices).
-route('GET', '/api/language', (req, res) => json(res, 200, { speech: speechLang(), reply: getSetting('reply_lang') || '', multilingual: fs.existsSync(WHISPER_MULTI) }));
-route('PUT', '/api/language', async (req, res) => {
-  const { speech, reply } = await body(req);
-  if (speech !== undefined) {
-    const next = /^(auto|[a-z]{2})$/.test(speech) && speech !== 'en' ? speech : '';
-    if (next !== speechLang()) {
-      const modelChanged = (!!next) !== (!!speechLang());
-      setSetting('speech_lang', next);
-      if (modelChanged && whisperProc) { whisperFails = -1; whisperProc.kill(); } // exits, then restarts with the other model
-    }
-  }
-  if (reply !== undefined) { setSetting('reply_lang', String(reply || '').replace(/[^\p{L} ()-]/gu, '').slice(0, 40)); for (const b of q('SELECT * FROM bots').all()) writeBotBrief(parseBot(b)); }
-  json(res, 200, { ok: true });
-});
-route('POST', '/api/transcribe', async (req, res) => {
-  if (!whisperProc) return json(res, 503, { error: 'Dictation isn’t running on the server' });
-  const { audio } = await body(req, 16e6); // ~5 minutes of 16 kHz mono WAV, base64
-  const wav = Buffer.from(String(audio || ''), 'base64');
-  if (wav.length < 1000 || wav.toString('ascii', 0, 4) !== 'RIFF') return json(res, 400, { error: 'Expected a WAV recording' });
-  const form = new FormData();
-  form.append('file', new Blob([wav], { type: 'audio/wav' }), 'speech.wav');
-  form.append('response_format', 'json');
-  form.append('temperature', '0');
-  if (speechLang()) form.append('language', speechLang());
-  try {
-    const r = await fetch(`http://127.0.0.1:${WHISPER_PORT}/inference`, { method: 'POST', body: form, signal: AbortSignal.timeout(120_000) });
-    const d = await r.json();
-    if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
-    // Whisper marks silence and noise like "[BLANK_AUDIO]" or "(wind blowing)"; drop those.
-    const text = String(d.text || '').replace(/\[[^\]]*\]|\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
-    json(res, 200, { text });
-  } catch (e) { json(res, 502, { error: 'Transcription failed: ' + e.message }); }
-});
-
-// ---------- interface translation (bin/translate-server.py, Argos Translate, offline) ----------
-// Started on first use. Translations are cached per language in data/i18n/<lang>.json and shared by every device.
-const ARGOS_PY = process.env.NIMBUS_ARGOS_PY || path.join(os.homedir(), 'opt/argos-py/bin/python');
-const TRANSLATE_PORT = Number(process.env.NIMBUS_TRANSLATE_PORT || 8180);
-const I18N_LANGS = ['es', 'fr', 'de', 'pt', 'it', 'nl', 'pl', 'sv', 'tr', 'ru', 'uk', 'ja', 'zh', 'ko', 'hi', 'vi', 'id'];
-let translateProc = null, translateReady = null;
-function startTranslate() {
-  if (translateReady) return translateReady;
-  if (!fs.existsSync(ARGOS_PY)) return Promise.reject(new Error('Translation isn’t installed on the server'));
-  translateProc = spawn(ARGOS_PY, ['-I', path.join(HERE, 'bin/translate-server.py'), String(TRANSLATE_PORT)], { stdio: 'ignore' });
-  translateProc.on('exit', () => { translateProc = null; translateReady = null; });
-  translateReady = (async () => {
-    for (let i = 0; i < 120; i++) { // loading the models takes a few seconds
-      try { if ((await fetch(`http://127.0.0.1:${TRANSLATE_PORT}/`)).ok) return; } catch {}
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    throw new Error('Translation didn’t start');
-  })();
-  translateReady.catch(() => { translateReady = null; });
-  return translateReady;
-}
-process.on('exit', () => translateProc?.kill());
-const i18nCache = new Map(), i18nFile = (l) => path.join(DATA_DIR, 'i18n', l + '.json');
-function i18nLoad(l) {
-  if (!i18nCache.has(l)) { let d = {}; try { d = JSON.parse(fs.readFileSync(i18nFile(l), 'utf8')); } catch {} i18nCache.set(l, d); }
-  return i18nCache.get(l);
-}
-let i18nSaveTimer = {};
-function i18nSave(l) {
-  clearTimeout(i18nSaveTimer[l]);
-  i18nSaveTimer[l] = setTimeout(() => { fs.mkdirSync(path.dirname(i18nFile(l)), { recursive: true }); fs.writeFileSync(i18nFile(l), JSON.stringify(i18nLoad(l))); }, 1000);
-}
-// Brand and product names stay as they are.
-const KEEP = ['Nimbus', 'Claude', 'Claude Code', 'Plugins', 'plugins', 'Connectors', '{#}', 'Bot', 'bot', 'Bots', 'bots', 'Haiku', 'Sonnet', 'Opus', 'Kokoro', 'Piper', 'GitHub', 'Google', 'Proxmox', 'Ctrl', 'Alt', 'Shift', 'Enter'];
-route('GET', '/api/i18n/:lang', (req, res, p) => I18N_LANGS.includes(p.lang) ? json(res, 200, { translations: i18nLoad(p.lang) }) : json(res, 404, { error: 'Unknown language' }));
-route('POST', '/api/i18n/:lang', async (req, res, p) => {
-  if (!I18N_LANGS.includes(p.lang)) return json(res, 404, { error: 'Unknown language' });
-  const { texts = [], keep: names = [] } = await body(req);
-  const dict = i18nLoad(p.lang);
-  // Names (bots, chats, projects) the page asked to keep, plus brand names; longest first so "Claude Code" beats "Claude".
-  const keepRe = new RegExp(`(?<![\\p{L}])(${[...KEEP, ...(Array.isArray(names) ? names : []).map(String).filter((n) => n.length > 1 && n.length < 60).slice(0, 50)].sort((a, b) => b.length - a.length).map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\p{L}])`, 'gu');
-  const todo = [...new Set((Array.isArray(texts) ? texts : []).map((t) => String(t).trim()).filter((t) => t && t.length < 400 && !(t in dict)))].slice(0, 150);
-  if (todo.length && Object.keys(dict).length < 30000) {
-    try {
-      await startTranslate();
-      // Protect brand names and shortcut keys with placeholders the translator leaves alone.
-      const masked = todo.map((t) => { const keep = []; const m = t.replace(keepRe, (w) => `#${keep.push(w) - 1}#`); return { m, keep }; });
-      const r = await fetch(`http://127.0.0.1:${TRANSLATE_PORT}/`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lang: p.lang, texts: masked.map((x) => x.m) }), signal: AbortSignal.timeout(120_000) });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
-      todo.forEach((t, i) => {
-        let out = String(d.texts[i] ?? t).replace(/#\s*(\d+)\s*#/g, (_, n) => masked[i].keep[n] ?? '').trim();
-        if (!/[.!?。…]$/.test(t)) out = out.replace(/[.。]$/, ''); // the translator likes to add a full stop
-        dict[t] = out;
-      });
-      i18nSave(p.lang);
-    } catch (e) { return json(res, 503, { error: e.message }); }
-  }
-  json(res, 200, { translations: Object.fromEntries((Array.isArray(texts) ? texts : []).map((t) => [String(t).trim(), dict[String(t).trim()]]).filter(([, v]) => v !== undefined)) });
-});
-
 // Approvals (hook side: localhost, or the computer VM)
 // Bots run here (localhost) or in a container on the computer VM, whose hook calls come from the VM's address.
 function hookAuth(req) {
@@ -1425,65 +1187,27 @@ function hookAuth(req) {
   if (['127.0.0.1', '::1'].includes(from)) return true;
   try { return computersOn() && from === new URL(agentConfig().url).hostname; } catch { return false; }
 }
-// Guard for bots that don't manage Nimbus: no reading its secrets (data/: keys, tokens, the database, other
-// bots' folders; .env; .git) and no writing its files. A bot's own folder and chat uploads stay open, and
-// Nimbus's helper tools (bin/) still run. Trusted bots: setting "trusted_bots" (ids, e.g. "3"). The shell
-// check is a text match, not a sandbox; the sandbox (sandbox.js) is the real wall.
 const NIMBUS_DIR = path.resolve(HERE);
-function guardNimbus(tool, input, botId) {
-  const trusted = String(getSetting('trusted_bots', 'NIMBUS_TRUSTED_BOTS') || '').split(/[\s,]+/).filter(Boolean);
-  if (trusted.includes(String(botId))) return null;
-  const own = path.resolve(botDir(botId)) + path.sep;
-  const inNimbus = (r) => (r === NIMBUS_DIR || r.startsWith(NIMBUS_DIR + path.sep)) && !(r + path.sep).startsWith(own);
-  const secretPath = (r) => {
-    if (!inNimbus(r)) return false;
-    const rel = path.relative(NIMBUS_DIR, r);
-    return rel === 'data' || /^\.env/.test(rel) || /^\.git(\/|$)/.test(rel)
-      || (rel.startsWith('data' + path.sep) && !/^data[\\/](uploads|shared)[\\/]/.test(rel));
-  };
-  const nimbusCode = (r) => inNimbus(r) && !/^data[\\/]shared[\\/]/.test(path.relative(NIMBUS_DIR, r));
-  if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(tool)) {
-    const f = input?.file_path || input?.notebook_path;
-    return f && nimbusCode(path.resolve(own, String(f))) ? `writing ${f} is blocked` : null;
-  }
-  if (/^(Read|Grep|Glob|NotebookRead|LS)$/.test(tool)) {
-    const f = input?.file_path || input?.notebook_path || input?.path;
-    return f && secretPath(path.resolve(own, String(f))) ? `reading ${f} is blocked` : null;
-  }
-  if (tool === 'Bash') {
-    const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const c = String(input?.command || '').replace(new RegExp(esc(own.slice(0, -1)) + '(?=/|["\'\\s;&|)]|$)', 'g'), 'BOT_DIR')
-      .replace(new RegExp(esc(path.join(NIMBUS_DIR, 'data')) + '/(uploads|shared)/', 'g'), 'OPEN/');
-    const d = esc(NIMBUS_DIR);
-    if (new RegExp(`${d}/(data|\\.env|\\.git)\\b`).test(c) || /(~|\$HOME|\/home\/[^/\s]+)\/nimbus\/(data|\.env)\b/.test(c) || /\b(secret\.key|admin\.token|nimbus\.db)\b/.test(c))
-      return 'that command reads Nimbus’s private data';
-  }
-  return null;
-}
+const gate = createGate({
+  nimbusDir: NIMBUS_DIR, ownDir: botDir, allowedEmails: ALLOWED_EMAILS,
+  trusted: (botId) => String(getSetting('trusted_bots', 'NIMBUS_TRUSTED_BOTS') || '').split(/[\s,]+/).includes(String(botId)),
+  journal: journalBefore, planAllows, autoApprove,
+  runStatus: (id) => q('SELECT status FROM runs WHERE id=?').get(id)?.status,
+  ask({ bot, run, tool, input, why, pattern }) {
+    const ins = q('INSERT INTO approvals (run_id, bot_id, thread, tool, input) VALUES (?,?,?,?,?)').run(run.id, bot.id, run.thread, tool, redact(JSON.stringify(input || {})));
+    const approvalId = Number(ins.lastInsertRowid);
+    addMessage(run.thread, bot.id, 'approval', { approvalId, tool, input, status: 'pending', pattern, ...(why ? { why } : {}) }, run.id);
+    markTraceWaiting(run.id, tool, true);
+    broadcast('approvals_changed', {});
+    return approvalId;
+  },
+});
 route('POST', '/api/hook/pretool', async (req, res) => {
   if (!hookAuth(req)) return json(res, 403, { error: 'forbidden' });
   const { runId, tool, input } = await body(req);
   const run = q('SELECT * FROM runs WHERE id=?').get(runId);
   if (!run) return json(res, 200, { decision: 'allow' });
-  const bot = parseBot(q('SELECT * FROM bots WHERE id=?').get(run.bot_id));
-  const guard = guardNimbus(tool, input, bot.id);
-  if (!guard) journalBefore(run, tool, input);
-  if (guard) return json(res, 200, { decision: 'deny', reason: `Nimbus: ${guard}. Bots can't read Nimbus's private data or change its files. Don't retry; tell the user if you need it.` });
-  const gated = bot.approval_rules.some((r) => ruleMatches(r, tool, input)) && !bot.allow_rules.some((r) => ruleMatches(r, tool, input))
-    && !(bot.allow_rules.includes('@self-email') && isSelfEmail(tool, input));
-  if (!gated) return json(res, 200, { decision: 'allow' });
-  if (planAllows(run.thread, tool, input)) return json(res, 200, { decision: 'allow' }); // part of a plan you approved
-  const auto = await autoApprove(bot, run, tool, input).catch(() => ({ allow: false })); // Settings → Auto-approve
-  if (auto.allow) return json(res, 200, { decision: 'allow' });
-  // The check can take seconds; if the run was stopped meanwhile, don't leave a card nobody can answer.
-  if (q('SELECT status FROM runs WHERE id=?').get(run.id)?.status !== 'running') return json(res, 200, { decision: 'deny', reason: 'The task was stopped.' });
-  const ins = q('INSERT INTO approvals (run_id, bot_id, thread, tool, input) VALUES (?,?,?,?,?)').run(run.id, bot.id, run.thread, tool, redact(JSON.stringify(input || {})));
-  const approvalId = Number(ins.lastInsertRowid);
-  const pattern = tool === 'Bash' ? commandPrefix(String(input?.command || '')).trim() + ' …' : null;
-  addMessage(run.thread, bot.id, 'approval', { approvalId, tool, input, status: 'pending', pattern, ...(auto.why ? { why: auto.why } : {}) }, run.id);
-  markTraceWaiting(run.id, tool, true);
-  broadcast('approvals_changed', {});
-  json(res, 200, { decision: 'ask', approvalId });
+  json(res, 200, await gate.decide(parseBot(q('SELECT * FROM bots WHERE id=?').get(run.bot_id)), run, tool, input));
 });
 // Bot-to-bot messages (bin/ask-bot.mjs). The asking bot's run id gives who is asking and the
 // chain of bots already waiting, so a bot can't message one that is waiting on it (that would deadlock).

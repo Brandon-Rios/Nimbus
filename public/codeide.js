@@ -1,9 +1,9 @@
-// Nimbus Code, the rest of the IDE (server: code2.js): Pull request / Issues / Search / Problems tiles, history,
+// Nimbus Code, the rest of the IDE (server: codeide.js): Pull request / Issues / Search / Problems tiles, history,
 // blame, merge-conflict helper, Try another way + compare, Ctrl+P and Ctrl+Shift+F, @file in the message box,
 // comment on a diff line, preview console errors and element picking, test results after each turn.
 import { CODE_EXT, openInEditor, editorFile, codeKey, codeInfo, showTile, reloadCode, diffModal } from './codeui.js';
 let X;
-export function initCode2(ctx) { X = ctx; }
+export function initCodeIde(ctx) { X = ctx; }
 const enc = encodeURIComponent;
 const api = (k, p, o) => X.api(`/api/code2/${enc(k)}${p}`, o);
 const fail = (e) => X.toast(e.message || String(e), { type: 'error' });

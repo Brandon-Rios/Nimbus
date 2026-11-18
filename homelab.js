@@ -194,7 +194,7 @@ function searchLogs({ text = '', and = '', days = 1, limit = 300 }) {
 }
 
 // ---------- routes ----------
-export function registerExtras2(route, { json, body, postToThread, pveGet, pveConfig }) {
+export function registerHomelab(route, { json, body, postToThread, pveGet, pveConfig }) {
   pveRef = { pveGet, pveConfig };
   route('GET', '/api/extras/backups', async (req, res) => { try { json(res, 200, await backups()); } catch (e) { json(res, 502, { error: e.message }); } });
   route('GET', '/api/extras/ipmap', async (req, res) => { try { json(res, 200, await ipMap()); } catch (e) { json(res, 500, { error: e.message }); } });
@@ -255,7 +255,7 @@ export function registerExtras2(route, { json, body, postToThread, pveGet, pveCo
   });
 }
 
-export function startExtras2() {
+export function startHomelab() {
   setTimeout(() => arpScan().catch(() => {}), 30000);
   setInterval(() => arpScan().catch(() => {}), 15 * 60000).unref();
   setInterval(() => { backupDaily(); pruneJournal(); }, 10 * 60000).unref();

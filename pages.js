@@ -10,7 +10,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const STARTED = Date.now();
 const portUp = (port) => new Promise((ok) => { const s = net.connect(port, '127.0.0.1'); const done = (v) => { s.destroy(); ok(v); }; s.once('connect', () => done(true)); s.once('error', () => done(false)); s.setTimeout(600, () => done(false)); });
 
-export function registerPro(route, { json, q, DATA_DIR }) {
+export function registerPages(route, { json, q, DATA_DIR }) {
   // Runs and cost per bot per day, last N days.
   route('GET', '/api/pro/usage', (req, res, _p, url) => {
     const days = Math.min(90, Math.max(1, Number(url.searchParams.get('days')) || 14));

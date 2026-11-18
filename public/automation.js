@@ -1,7 +1,7 @@
-// Screens for extras.js on the server: Watchdog, Playbooks, Hand-offs, Team memory, Budgets (all in Settings),
+// Screens for automation.js on the server: Watchdog, Playbooks, Hand-offs, Team memory, Budgets (all in Settings),
 // the "Since yesterday" card on Home, Send later, Save as playbook and Post-mortem. No Claude calls here.
 let X;
-export function initExtras(ctx) { X = ctx; }
+export function initAutomation(ctx) { X = ctx; }
 const $ = (s, r = document) => r.querySelector(s);
 const ago = (t) => { const s = Math.max(0, Date.now() / 1000 - t); return s < 90 ? 'just now' : s < 5400 ? Math.round(s / 60) + ' min ago' : s < 129600 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago'; };
 const when = (t) => new Date(t * 1000).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });

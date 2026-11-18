@@ -1,7 +1,7 @@
-// Screens for extras3.js: Auto-approve, Self-review, Skills, Connectors (Settings → AI tools), Rewind and
+// Screens for aitools.js: Auto-approve, Self-review, Skills, Connectors (Settings → AI tools), Rewind and
 // Add-to-memory buttons in chats, Voice mode (talk back and forth, hands-free) and the camera.
 let X;
-export function initExtras3(ctx) { X = ctx; }
+export function initAiTools(ctx) { X = ctx; }
 const ago = (t) => { if (!t) return 'never'; const s = Math.max(0, Date.now() / 1000 - t); return s < 90 ? 'just now' : s < 5400 ? Math.round(s / 60) + ' min ago' : s < 129600 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago'; };
 const fail = (e) => X.toast(e.message || String(e), { type: 'error' });
 function page(title, intro, wide = true) {

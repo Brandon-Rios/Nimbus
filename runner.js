@@ -1,5 +1,6 @@
 // Runs bots: starts Claude Code for each message (one run at a time per chat, a few chats at once), streams its steps
 // into the chat as a live trace, handles approvals, queues, time and usage limits, and hand-offs between bots.
+import { createStreamReader, toolText } from './stream.js';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -153,12 +154,6 @@ function setStatus(botId, state, label) {
 }
 
 // ---------- trace helpers ----------
-function summarizeTool(name, input = {}) {
-  const arg = input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.url ?? input.query ?? input.description;
-  const s = arg != null ? String(arg) : JSON.stringify(input);
-  const short = s.length > 90 ? s.slice(0, 87) + '…' : s;
-  return `${name}(${short.replace(/\s+/g, ' ')})`;
-}
 
 // Traces are kept per run so the approval endpoint can mark a step as paused.
 const liveTraces = new Map(); // runId -> { msgId, body }
@@ -184,7 +179,6 @@ function codeStep(tool, input = {}, cwd) {
   if (tool === 'Bash') return { cmd: redact(String(input.command ?? '')).slice(0, 4000) };
   return {};
 }
-const toolText = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => x.text || '').join('\n') : '');
 export function projectBots(projectId) {
   return q('SELECT b.* FROM bots b JOIN project_members m ON m.bot_id=b.id WHERE m.project_id=?').all(Number(projectId)).map(parseBot);
 }
@@ -270,7 +264,7 @@ export function runBot({ botId, thread, prompt, depth = 0, source = 'user', pare
   botId = Number(botId);
   // "Plan first" (composer toggle): the bot only plans; you approve the plan once, then it runs it.
   if (/^\[Plan first\]/.test(prompt)) prompt += `\n\n(PLAN FIRST: do not change anything yet. Look around read-only if you need to, then reply with a short numbered plan and every command you will run, exactly, in \`\`\`sh blocks, one command per line. End your reply with the line PLAN_READY. The user approves the plan with one click; then you carry it out.)`;
-  // Guards (extras.js: weekly budget per bot) can refuse runs that aren't the user's own messages.
+  // Guards (automation.js: weekly budget per bot) can refuse runs that aren't the user's own messages.
   for (const g of runGuards) {
     const why = isUserSource(source) || source === 'auto-compact' ? null : g(botId, source);
     if (why) {
@@ -484,71 +478,20 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
       const waiting = clock.since ? Date.now() - clock.since : 0;
       if (Date.now() - clock.start - clock.waited - waiting > RUN_TIMEOUT_MS) child.kill('SIGTERM');
     }, 15_000);
-    const toolsById = new Map();
-    let buf = '', finalText = null, isError = false, cost = 0, sessionId = null, compacted = null;
-
-    child.stdout.on('data', (chunk) => {
-      buf += chunk;
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line) continue;
-        let ev; try { ev = JSON.parse(line); } catch { continue; }
-        if (ev.session_id) sessionId = ev.session_id;
-        // Claude Code compacted the history (asked with /compact, or on its own near the limit).
-        if (ev.type === 'system' && ev.subtype === 'compact_boundary') {
-          const m = ev.compact_metadata || {};
-          compacted = { pre: m.pre_tokens || 0, post: m.post_tokens || 0, trigger: m.trigger || 'auto' };
-          traceBody.context = compacted.post; traceBody.compacted = compacted;
-          updateMessage(traceMsg.id, traceBody);
-        }
-        if (ev.type === 'assistant' && ev.message?.content) {
-          for (const block of ev.message.content) {
-            if (block.type === 'tool_use') {
-              const step = { id: block.id, tool: block.name, text: summarizeTool(block.name, block.input), state: 'running' };
-              // Code threads keep before/after and commands; other chats keep before/after of edits for the diff view.
-              if (ct || /^(Edit|MultiEdit|Write|Bash)$/.test(block.name)) Object.assign(step, codeStep(block.name, block.input, cwd));
-              toolsById.set(block.id, step);
-              traceBody.steps.push(step);
-              updateMessage(traceMsg.id, traceBody);
-            } else if (block.type === 'text' && block.text?.trim()) {
-              traceBody.lastThought = block.text.trim().slice(0, 300);
-            }
-          }
-        }
-        // Context in use = what the latest model call read: fresh input plus cached prompt.
-        if (ev.type === 'assistant' && ev.message?.usage) {
-          const u = ev.message.usage;
-          const ctx = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-          if (ctx && ctx !== traceBody.context) { traceBody.context = ctx; updateMessage(traceMsg.id, traceBody); }
-        }
-        if (ev.type === 'user' && Array.isArray(ev.message?.content)) {
-          for (const block of ev.message.content) {
-            if (block.type === 'tool_result' && toolsById.has(block.tool_use_id)) {
-              const step = toolsById.get(block.tool_use_id);
-              const denied = block.is_error && /Nimbus: rejected/.test(JSON.stringify(block.content));
-              step.state = denied ? 'rejected' : block.is_error ? 'error' : 'done';
-              if (ct && step.cmd) step.out = redact(toolText(block.content)).slice(-1500);
-              if (ct) Code.changedSoon(thread, step.file);
-              updateMessage(traceMsg.id, traceBody);
-            }
-          }
-        } else if (ev.type === 'result') {
-          finalText = ev.result ?? '';
-          isError = !!ev.is_error;
-          cost = ev.total_cost_usd || 0;
-          const u = ev.usage || {};
-          traceBody.tokens = { in: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0), out: u.output_tokens || 0 };
-          const mu = Object.values(ev.modelUsage || {});
-          const win = Math.max(0, ...mu.map((m) => m.contextWindow || 0));
-          if (win) traceBody.contextWindow = win;
-        }
-      }
+    const reader = createStreamReader(traceBody, {
+      onChange: () => updateMessage(traceMsg.id, traceBody),
+      // Code threads keep before/after and commands; other chats keep before/after of edits for the diff view.
+      stepExtra: (block) => (ct || /^(Edit|MultiEdit|Write|Bash)$/.test(block.name) ? codeStep(block.name, block.input, cwd) : null),
+      onToolDone: (step, block) => {
+        if (ct && step.cmd) step.out = redact(toolText(block.content)).slice(-1500);
+        if (ct) Code.changedSoon(thread, step.file);
+      },
     });
+    child.stdout.on('data', (chunk) => reader.feed(chunk));
     child.stderr.on('data', (d) => { stderr += d; if (stderr.length > 8000) stderr = stderr.slice(-8000); });
 
     child.on('close', (code) => {
+      const { finalText, isError, cost, sessionId, compacted } = reader.result;
       clearInterval(killer); runClocks.delete(runId);
       procs.delete(runId);
       liveTraces.delete(runId);
