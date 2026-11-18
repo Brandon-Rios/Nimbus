@@ -1,6 +1,6 @@
 :root, :root[data-theme="dark"] {
   --bg: #0e0e0f; --side: #161617; --panel: #1b1b1d; --card: #1f1f22; --hover: #232326; --active: #2a2a2e;
-  --line: #2a2a2d; --line-strong: #3a3a3e; --text: #ececee; --muted: #8e8e95; --faint: #5f5f66;
+  --line: #2a2a2d; --line-strong: #3a3a3e; --text: #ececee; --muted: #8e8e95; --faint: #808088;
   --bubble: #232326; --user: #e9e9ec; --user-text: #111; --btn: #2a2a2e; --btn-hover: #333338;
   --primary: #f2f2f4; --primary-text: #111; --ok: #3ecf8e; --bad: #ff5d5d; --warn: #f5a524;
   --accent: #3b82f6;
@@ -9,7 +9,7 @@
 }
 :root[data-theme="light"] {
   --bg: #ffffff; --side: #f6f6f7; --panel: #f3f3f5; --card: #ffffff; --hover: #ececef; --active: #e4e4e8;
-  --line: #e6e6ea; --line-strong: #d4d4da; --text: #151517; --muted: #6b6b73; --faint: #a0a0a8;
+  --line: #e6e6ea; --line-strong: #d4d4da; --text: #151517; --muted: #6b6b73; --faint: #76767e;
   --bubble: #f0f0f2; --user: #151517; --user-text: #fff; --btn: #efeff2; --btn-hover: #e4e4e8;
   --primary: #151517; --primary-text: #fff; --ok: #16a36a; --bad: #d93636; --warn: #c77c02;
   color-scheme: light;
@@ -1625,8 +1625,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline-offs
 #home-digest .dg-big.ok { color: #22c55e; } #home-digest .dg-big.bad { color: #ef4444; }
 #home-digest .dg-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
 #home-digest .dg-list li { display: flex; align-items: center; gap: 8px; }
-#home-digest .dg-links { margin-top: 10px; font-size: 12.5px; color: var(--muted); }
-#home-digest .dg-links a, #home-digest .dg-links .linkish { color: var(--primary); font-size: 12.5px; }
+#home-digest .dg-links { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+#home-digest .dg-links .btn svg { width: 14px; height: 14px; }
+#home-digest .dg-list li .btn { margin-left: auto; }
+#home-digest .dg-top .btn { margin-left: 8px; }
 /* Bot mood: something it owns is down */
 .side .av-wrap.mood-worried .avatar svg { animation: worried 0.9s ease-in-out infinite; filter: saturate(.7); }
 .side .av-wrap.mood-worried::after { content: ''; position: absolute; left: -2px; top: 2px; width: 6px; height: 8px; background: #7dd3fc; border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%; animation: sweat 1.8s ease-in infinite; }
@@ -1845,3 +1847,85 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline-offs
   .composer form > textarea { order: -1; flex: 1 0 100%; padding: 8px 10px 4px; }
   .composer form > .send { margin-left: auto; }
 }
+
+/* ---------- UI/UX review 2026-11-17 (doc d_d7e95810a7) ---------- */
+/* Home: bot picker, one quiet line instead of empty cards */
+.home-pickbot { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 10px 0 6px; border-radius: 10px; background: var(--btn); max-width: 220px; flex-shrink: 0; }
+.home-pickbot span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.home-pickbot > svg { transform: rotate(90deg); opacity: .6; flex-shrink: 0; }
+.home-pickbot:hover { background: var(--btn-hover); }
+.home-quiet { grid-column: 1 / -1; margin: 0; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13.5px; padding: 2px 4px; }
+.home-quiet .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
+@media (max-width: 760px) { .home-pickbot { max-width: none; flex: 1 1 100%; } }
+
+/* Approval cards: decided ones lead with the result; long commands fold to 2 lines */
+.approval .label .what { font-weight: 500; color: var(--text); }
+.approval pre { line-height: 1.5; }
+.approval pre.clamp { max-height: calc(3em + 18px); overflow: hidden; -webkit-mask-image: linear-gradient(#000 55%, transparent); mask-image: linear-gradient(#000 55%, transparent); }
+.approval .show-all { align-self: flex-start; margin-top: -6px; font-size: 12.5px; color: var(--muted); }
+.approval .show-all:hover { color: var(--text); }
+.msg .approval .stamp { opacity: 1; }
+.approval.approved .stamp { color: #0b0b0c; }
+
+/* System notes as small cards with a severity color */
+.note.note-card { align-self: stretch; display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 10px; background: var(--panel); font-size: 13px; color: var(--text); line-height: 1.45; }
+.note-card .note-ico { flex-shrink: 0; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: #0b0b0c; background: var(--accent); margin-top: 1px; }
+.note-card .note-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.note-card .btn { flex-shrink: 0; align-self: center; }
+.note-card.warn { border-left-color: var(--warn); } .note-card.warn .note-ico { background: var(--warn); }
+.note-card.ok { border-left-color: var(--ok); } .note-card.ok .note-ico { background: var(--ok); }
+
+/* Message actions: Copy/Quote/Pin + ⋯; on touch screens tap the message to show them */
+.ma-more:not([hidden]) { display: contents; }
+@media (pointer: coarse) {
+  .msg-actions { display: none; opacity: 1; flex-wrap: wrap; }
+  .msg-actions.show { display: flex; }
+  .msg-actions button { font-size: 13px; min-height: 36px; padding: 6px 10px; }
+}
+
+/* Inline paths inside your own (light) bubble: readable, not light blue on white */
+.msg.user .md code.path, .msg.user code { color: inherit; }
+
+/* Sidebar: the thread chevron shows on hover, so names get the room */
+@media (hover: hover) {
+  .side-item .side-caret:not(.open) { position: absolute; right: 6px; bottom: 8px; opacity: 0; background: var(--hover); }
+  .side-item:hover .side-caret, .side-item:focus-within .side-caret { opacity: 1; }
+}
+
+/* Phone: header shows the bot's name; 44px tap areas; 12px smallest text */
+@media (max-width: 760px) {
+  .head .ph-hide { display: none; }
+  .head .title { flex: 0 1 auto; min-width: 0; }
+  .head .title b { display: block; min-width: 0; }
+  .head .th-crumb { max-width: 34%; }
+  .head .actions { flex: 0 0 auto; margin-left: auto; }
+  .note.note-card { flex-wrap: wrap; }
+  .note-card .note-text { flex-basis: calc(100% - 30px); }
+  .note-card .btn { margin-left: 28px; }
+  .side-item .time, .msg .stamp, .home-row > .muted, .home-next, .trace summary .sp { font-size: 12px; }
+}
+@media (pointer: coarse) {
+  .icon-btn { min-width: 44px; min-height: 44px; }
+  .side-caret { width: 36px; height: 44px; margin: -10px -8px -10px 0; }
+  .side-group-head .icon-btn { min-width: 44px; min-height: 44px; }
+}
+
+/* ---------- UX best practices 2026-11-17 ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* Loading placeholders in the shape of content, instead of "Loading…" */
+.skel { display: flex; flex-direction: column; gap: 10px; padding: 6px 4px 10px; }
+.skel i { display: block; height: 12px; border-radius: 6px; background: linear-gradient(90deg, var(--hover) 25%, var(--active) 50%, var(--hover) 75%); background-size: 200% 100%; animation: skel 1.3s ease-in-out infinite; }
+.skel i:nth-child(1) { width: 70%; } .skel i:nth-child(2) { width: 90%; } .skel i:nth-child(3) { width: 45%; }
+@keyframes skel { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .skel i { animation: none; } }
+/* In-app confirm */
+.confirm-scrim { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(0,0,0,.5); }
+.confirm-box { width: min(400px, calc(100vw - 32px)); padding: 18px; }
+.confirm-box p { margin: 0 0 16px; line-height: 1.5; }
+.confirm-box .row { display: flex; justify-content: flex-end; gap: 8px; }
+.confirm-box .btn.danger { background: var(--bad); color: #fff; }
+/* A message that didn't send */
+.send-err { max-width: 760px; margin: 0 auto 6px; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--bad); color: var(--bad); font-size: 13px; background: var(--panel); }
+.send-err span { flex: 1; min-width: 0; }
+/* The thread arrow shows when focused by keyboard too */
+.side-caret:focus-visible { opacity: 1 !important; outline: 2px solid var(--accent); }

@@ -132,6 +132,36 @@ function toast(text, { action, onAction, ms, type } = {}) {
   setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 220); }, life);
 }
 
+// Screen readers: new replies and approval requests are read out (toasts already are, via role=status/alert).
+function announce(text, urgent = false) {
+  let el = document.getElementById(urgent ? 'sr-alert' : 'sr-live');
+  if (!el) { el = document.createElement('div'); el.id = urgent ? 'sr-alert' : 'sr-live'; el.className = 'sr-only'; el.setAttribute('aria-live', urgent ? 'assertive' : 'polite'); document.body.append(el); }
+  el.textContent = ''; setTimeout(() => { el.textContent = String(text).slice(0, 300); }, 50);
+}
+// In-app confirm (instead of the browser's confirm box). Its own layer, so an open Settings window stays as it is.
+function askConfirm(text, { ok = 'Delete', danger = true } = {}) {
+  return new Promise((resolve) => {
+    const back = document.activeElement, wrap = document.createElement('div');
+    wrap.className = 'scrim confirm-scrim';
+    wrap.innerHTML = `<div class="modal confirm-box" role="alertdialog" aria-modal="true" aria-describedby="cf-text"><p id="cf-text"></p><div class="row"><button class="btn" data-cf="0">Cancel</button><button class="btn ${danger ? 'danger' : 'primary'}" data-cf="1">${esc(ok)}</button></div></div>`;
+    wrap.querySelector('#cf-text').textContent = text;
+    const done = (v) => { wrap.remove(); back?.focus?.(); resolve(v); };
+    wrap.addEventListener('click', (e) => { const b = e.target.closest('[data-cf]'); if (b) done(b.dataset.cf === '1'); else if (e.target === wrap) done(false); });
+    wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } trapTab(e, wrap); });
+    document.body.append(wrap); wrap.querySelector('[data-cf="0"]').focus();
+  });
+}
+// Keep Tab inside an open window.
+function trapTab(e, box) {
+  if (e.key !== 'Tab') return;
+  const f = [...box.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select, textarea, [tabindex]:not([tabindex="-1"])')].filter((x) => x.offsetParent !== null);
+  if (!f.length) return;
+  if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+  else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+  else if (!box.contains(document.activeElement)) { e.preventDefault(); f[0].focus(); }
+}
+const SKEL = '<div class="skel" role="status" aria-label="Loading"><i></i><i></i><i></i></div>';
+
 // A light tap on phones (Android browsers and the Nimbus app); ignored elsewhere.
 const buzz = (ms = 8) => { try { if (matchMedia('(pointer: coarse)').matches) navigator.vibrate?.(ms); } catch {} };
 
@@ -248,7 +278,7 @@ function projectModal(p, { ownerBotId = null, shared = false } = {}) {
   el.addEventListener('click', async (e) => {
     if (e.target.closest('[data-close]')) return closeModal();
     try {
-      if (e.target.id === 'p-del' && confirm(`Delete the project "${p.name}"? Its threads and files are kept (the threads move out of the project).`)) {
+      if (e.target.id === 'p-del' && await askConfirm(`Delete the project "${p.name}"? Its threads and files are kept (the threads move out of the project).`)) {
         await api(`/api/projects/${p.id}`, { method: 'DELETE' }); closeModal(); return refreshState();
       }
       if (e.target.id === 'p-save') {
@@ -499,7 +529,7 @@ function renderSide() {
             <span class="row1"><span class="name">${esc(it.name)}</span><span class="time">${it.last ? stamp(it.last.at) : ''}</span>${isUnread(it) ? '<i class="unread-dot" aria-label="Unread"></i>' : ''}</span>
             <span class="sub">${esc(it.last ? (it.last.author === 'user' ? 'You: ' : '') + it.last.text : it.fallback || 'Say hi')}</span>
           </span>
-          ${it.bot ? `<span class="side-caret ${sideIsOpen(it.bot.id) ? 'open' : ''}" data-expand="${it.bot.id}" role="button" aria-label="Show threads">${TI.chev}</span>` : ''}
+          ${it.bot ? `<span class="side-caret ${sideIsOpen(it.bot.id) ? 'open' : ''}" data-expand="${it.bot.id}" role="button" tabindex="0" aria-expanded="${sideIsOpen(it.bot.id)}" aria-label="Show ${esc(it.bot.name)}’s threads">${TI.chev}</span>` : ''}
         </button>${it.bot && !sideQuery && sideIsOpen(it.bot.id) ? sideTree(it.bot, key) : ''}`).join('') + (g ? '</div>' : '')).join('') + (sideQuery ? '' : codeSidebar(key) + sharedProjects(key)) + (sideQuery ? '' : d.sideOrder ? '<button class="side-reset" data-act="side-recent">↺ Sort by recent activity</button>'
           : items.length > 1 ? '<div class="side-hint">Tip: drag chats to arrange them</div>' : '')
         : sideQuery ? '<div class="side-empty">No chats match</div>'
@@ -808,8 +838,8 @@ function renderAside() {
       ${d.learned.length ? d.learned.map((l) => `<div class="learned">“${esc(l.text)}” <span class="muted">· ${esc(bot(l.botId)?.name)}</span></div>`).join('')
         : '<div class="muted">When you tell a bot a rule, it shows up here.</div>'}
     </section>
-    ${d.computers ? '<section data-af-sec="sys" id="comp-box"><h4>Bot computers</h4><div class="muted">Loading…</div></section>' : ''}
-    ${d.proxmox ? '<section data-af-sec="sys" id="pve-box"><h4>Proxmox</h4><div class="muted">Loading…</div></section>' : ''}
+    ${d.computers ? `<section data-af-sec="sys" id="comp-box"><h4>Bot computers</h4>${SKEL}</section>` : ''}
+    ${d.proxmox ? `<section data-af-sec="sys" id="pve-box"><h4>Proxmox</h4>${SKEL}</section>` : ''}
     ${d.usage.byBot?.length ? `<section><h4>Usage by bot · 7 days</h4>${(() => { const total = d.usage.byBot.reduce((a, x) => a + x.cost, 0) || 1;
       return d.usage.byBot.slice(0, 6).map((x) => { const b = bot(x.bot_id); const pc = Math.round((x.cost / total) * 100);
         return `<div class="ubot">${avatar(b, 20)}<span class="un">${esc(b?.name || 'Deleted bot')}</span><span class="muted">${x.runs} runs · ${b ? esc(EFFORTS.find((e) => e[0] === b.effort)?.[1] || b.effort) : ''}</span><b>${pc}%</b></div>
@@ -965,8 +995,8 @@ function renderMain() {
           </label>
           <button class="icon-btn" data-act="new-thread" title="New thread" aria-label="New thread">${ICON.compose}</button>
           ${codeProject(threadKey()) ? BT_BTNS : ''}
-          <button class="icon-btn" data-act="files" title="Files in this chat" aria-label="Files">${ICON.folder}</button>
-          <button class="icon-btn" data-act="info" title="Chat details: environment, context, connectors" aria-label="Chat details">${ICON.sidebar}</button>
+          <button class="icon-btn ph-hide" data-act="files" title="Files in this chat" aria-label="Files">${ICON.folder}</button>
+          <button class="icon-btn ph-hide" data-act="info" title="Chat details: environment, context, connectors" aria-label="Chat details">${ICON.sidebar}</button>
           <button class="icon-btn" data-act="more-menu" title="More: voice, routines, browser, plugins, memory, artifacts, split, settings" aria-label="More">${ICON.dots}${nRoutines || artNew[threadKey()] ? '<i class="count dot"></i>' : ''}</button>`
         : `<button class="icon-btn" data-act="files" title="Files in this chat" aria-label="Files">${ICON.folder}</button>
            <button class="icon-btn" data-act="edit-room" title="Settings" aria-label="Settings">${ICON.gear}</button>`}
@@ -1089,12 +1119,23 @@ document.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-file-del]'); if (!b) return;
   e.preventDefault(); e.stopPropagation(); closePopover();
   const [mid, fid] = b.dataset.fileDel.split(':');
-  if (!confirm(fid === 'all' ? 'Delete the files in this message? They are removed from Nimbus for good.' : 'Delete this image? It is removed from Nimbus for good.')) return;
+  if (!await askConfirm(fid === 'all' ? 'Delete the files in this message? They are removed from Nimbus for good.' : 'Delete this image? It is removed from Nimbus for good.')) return;
   try { await api(`/api/messages/${mid}/files/${fid}`, { method: 'DELETE' }); buzz(10); toast('Deleted'); } catch (err) { toast(err.message); }
 }, true);
 document.addEventListener('click', async (e) => {
   const c = e.target.closest('#thread code[data-copy-path]'); if (!c) return;
   buzz(6); toast(await clip(c.textContent) ? 'Copied ' + c.textContent : 'Couldn’t copy');
+});
+
+// ---------- touch screens: tap a message to show its actions (they stay hidden otherwise) ----------
+document.addEventListener('click', (e) => {
+  if (!matchMedia('(pointer: coarse)').matches) return;
+  const msg = e.target.closest('#thread .msg[data-mid]');
+  if (!msg || e.target.closest('a, button, input, select, textarea, summary, pre, code, .msg-actions') || String(getSelection() || '')) return;
+  const acts = msg.querySelector(".msg-actions"); if (!acts || acts.dataset.keep !== undefined) return;
+  const show = !acts.classList.contains('show');
+  document.querySelectorAll('#thread .msg-actions.show:not([data-keep])').forEach((x) => x.classList.remove('show'));
+  acts.classList.toggle('show', show);
 });
 
 // ---------- right-click (or long-press) a message: redact ----------
@@ -1123,7 +1164,7 @@ document.addEventListener('contextmenu', (e) => {
     if (b.dataset.fileDel) return;
     if (b.dataset.copyMsg !== undefined) { return toast(await clip(m?.body || '') ? 'Copied' : 'Couldn’t copy'); }
     const text = b.dataset.redactSel !== undefined ? sel : '';
-    if (!confirm(text ? `Replace “${text.slice(0, 80)}” with [REDACTED] everywhere Nimbus stored it?` : 'Replace this whole message with [REDACTED]? It’s also removed from saved prompts and bot transcripts.')) return;
+    if (!await askConfirm(text ? `Replace “${text.slice(0, 80)}” with [REDACTED] everywhere Nimbus stored it?` : 'Replace this whole message with [REDACTED]? It’s also removed from saved prompts and bot transcripts.', { ok: 'Redact' })) return;
     try {
       const r = await api(`/api/messages/${id}/redact`, { method: 'POST', body: { text } });
       buzz(10); toast(`Redacted${r.transcripts ? ` (also in ${r.transcripts} transcript${r.transcripts > 1 ? 's' : ''})` : ''}`);
@@ -1469,9 +1510,9 @@ function clearAttachments() {
 
 function renderMessage(m, prev) {
   if (m.author === 'user') return `<div class="msg user" data-mid="${m.id}">${renderFiles(m)}${m.body ? `<div class="bubble">${linkify(esc(m.body))}</div>` : ''}${msgStamp(m.created_at)}
-    ${m.queued ? `<div class="queued-tag">Queued · waits for the current task</div><div class="msg-actions show"><button data-qedit="${m.id}">Edit</button><button data-qcancel="${m.id}">Cancel</button></div>` : m.body ? `<div class="msg-actions"><button data-copy="${m.id}" title="Copy">Copy</button><button data-edit="${m.id}" title="Edit and resend">Edit</button><button data-retry="${m.id}" title="Send again">Retry</button>${S.current?.type === 'bot' ? `<button data-rewind="${m.id}" title="Undo everything from here on: the bot’s file changes and this part of the chat">Rewind</button>` : ''}</div>` : ''}</div>`;
+    ${m.queued ? `<div class="queued-tag">Queued · waits for the current task</div><div class="msg-actions show" data-keep><button data-qedit="${m.id}">Edit</button><button data-qcancel="${m.id}">Cancel</button></div>` : m.body ? `<div class="msg-actions"><button data-copy="${m.id}" title="Copy">Copy</button><button data-edit="${m.id}" title="Edit and resend">Edit</button><button data-retry="${m.id}" title="Send again">Retry</button>${S.current?.type === 'bot' ? `<button data-rewind="${m.id}" title="Undo everything from here on: the bot’s file changes and this part of the chat">Rewind</button>` : ''}</div>` : ''}</div>`;
   if (m.kind === 'testrun') return renderTestRun(m);
-  if (m.kind === 'note') return `<div class="note" data-mid="${m.id}">${esc(m.body)}${renderFiles(m)}</div>`;
+  if (m.kind === 'note') return renderNote(m);
   if (m.kind === 'quiet') return `<div class="note quiet-ok" data-mid="${m.id}" title="Quiet check at ${clock(m.created_at)}">✓ All clear · ${esc(m.body)} <span class="muted">· ${clock(m.created_at)}</span></div>`;
   const b = bot(m.author) || { name: 'Deleted bot', color: '#555' };
   if (m.kind === 'trace') return renderTrace(m, prev);
@@ -1486,7 +1527,7 @@ function renderMessage(m, prev) {
   }
   if (m.kind === 'doc') { let d = {}; try { d = JSON.parse(m.body); } catch {} return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<button class="doc-card" data-doc-open="${esc(d.docId || '')}"><span class="dc-ico">📄</span><span><b>${esc(d.title || 'Document')}</b><small>Live document · click to open</small></span><span class="dc-open">Open</span></button></div>`; }
   return `<div class="msg bot ${m.kind === 'error' ? 'error' : ''}" data-mid="${m.id}" title="${clock(m.created_at)}">${speakerLabel(m, prev)}${m.body ? `<div class="bubble md">${md(m.body.replace(/\n?PLAN_READY\s*$/, ''))}</div>` : ''}${m.kind === 'text' ? planButton(m) + memoryButton(m) : ''}${renderFiles(m)}${msgStamp(m.created_at)}
-    <div class="msg-actions"><button data-copy="${m.id}">Copy</button>${m.kind === 'error' ? '<button data-continue="1">Try again</button>' : `<button data-quote="${m.id}" title="Quote this in your reply">Quote</button><button data-pin="${m.id}">${isPinned(m.id) ? 'Unpin' : 'Pin'}</button><button data-branch="${m.id}" title="Start a new thread that picks up from this reply">New thread from here</button><button data-speak="${m.id}">▶ Read aloud</button><button data-continue="1">Continue</button><button data-postmortem="1" title="Have the bot write up this fix as a live doc">Post-mortem</button>`}</div></div>`;
+    <div class="msg-actions"><button data-copy="${m.id}">Copy</button>${m.kind === 'error' ? '<button data-continue="1">Try again</button>' : `<button data-quote="${m.id}" title="Quote this in your reply">Quote</button><button data-pin="${m.id}">${isPinned(m.id) ? 'Unpin' : 'Pin'}</button><button data-ma-more aria-label="More actions" aria-expanded="false">⋯</button><span class="ma-more" hidden><button data-branch="${m.id}" title="Start a new thread that picks up from this reply">New thread from here</button><button data-speak="${m.id}">▶ Read aloud</button><button data-continue="1">Continue</button><button data-postmortem="1" title="Have the bot write up this fix as a live doc">Post-mortem</button></span>`}</div></div>`;
 }
 
 // While a bot works, the label cycles through cloud-themed phrases. The phrase is picked from the
@@ -1583,15 +1624,29 @@ function renderTrace(m, prev) {
 const openTraces = new Set();
 
 const JUST = new Map(); // approvals decided on this screen in the last few seconds: their card plays the stamp once
+// Nimbus's own notes in a chat: a small card with a severity color, and "Settings → X" becomes a button.
+const NOTE_WARN = /❌|⚠|\bfail(ed|s)?\b|\bno backup|\bdown\b|\berror\b|\bwarning\b|\bstopped\b|\bover budget\b/i;
+function renderNote(m) {
+  const body = String(m.body || ''), sev = /^✅/.test(body) ? 'ok' : NOTE_WARN.test(body) ? 'warn' : 'info';
+  const items = SET_NAV.flatMap(([, i]) => i);
+  let btn = '', text = body;
+  const hit = body.match(/(?:\s*[(·.]?\s*)?(?:See |Output: |Open )?Settings\s*→\s*([A-Za-z’' -]+?)(?=[.)·,]|$)\)?\.?/);
+  const item = hit && items.find((i) => i[1].toLowerCase() === hit[1].trim().toLowerCase());
+  if (item) { text = body.replace(hit[0], '').trim(); btn = `<button class="btn small" data-ex-open="${item[0]}">Open ${esc(item[1])}</button>`; }
+  return `<div class="note note-card ${sev}" data-mid="${m.id}"><span class="note-ico" aria-hidden="true">${sev === 'warn' ? '!' : sev === 'ok' ? '✓' : 'i'}</span><span class="note-text">${esc(text.replace(/^[✅❌⚠️]+\s*/u, ''))}${renderFiles(m)}</span>${btn}</div>`;
+}
 function renderApproval(m, b, prev) {
   const a = JSON.parse(m.body);
   const pending = a.status === 'pending';
   const input = a.tool === 'Bash' ? a.input.command : JSON.stringify(a.input, null, 2);
   const done = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired' }[a.status];
+  const what = esc(describeTool(a.tool, a.input).split(' — ')[0].replace(/^Run: .*/, 'Run a command'));
+  // Decided cards fold the command to 2 lines so the bot's answer stays near the top.
+  const long = !pending && (String(input).split('\n').length > 2 || String(input).length > 160);
   return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<div class="approval ${pending ? '' : `decided ${a.status}`} ${!pending && JUST.has(a.approvalId) ? 'just' : ''}">
-    <div class="label">${pending ? ICON.lock : `<span class="stamp">${a.status === 'approved' ? '✓' : '✕'}</span>`} ${pending ? 'Needs your approval' : done}</div>
-    <div>${esc(describeTool(a.tool, a.input).split(' — ')[0].replace(/^Run: .*/, 'Run a command'))}</div>
-    <pre>${esc(input)}</pre>
+    <div class="label">${pending ? ICON.lock : `<span class="stamp">${a.status === 'approved' ? '✓' : '✕'}</span>`} ${pending ? 'Needs your approval' : done}${pending ? '' : ` <span class="what">· ${what}</span>`}</div>
+    ${pending ? `<div>${what}</div>` : ''}
+    <pre class="${long ? 'clamp' : ''}">${esc(input)}</pre>${long ? '<button class="linkish show-all" data-unclamp>Show all</button>' : ''}
     ${a.why && pending ? `<div class="aa-why">⚠ ${esc(a.why)}</div>` : ''}
     ${a.note ? `<div class="muted">Your note: ${esc(a.note)}</div>` : ''}
     ${pending ? `<div class="row">
@@ -1700,7 +1755,8 @@ function connect() {
       if (nearBottom || m.author === 'user') th.scrollTop = th.scrollHeight;
       botWorkspaceUpdate();
     }
-    if (m.kind === 'approval' && m.author !== 'user') notify(m);
+    if (m.kind === 'approval' && m.author !== 'user') { notify(m); announce(`${bot(m.author)?.name || 'A bot'} needs your approval`, true); }
+    else if (m.thread === threadKey() && m.author !== 'user' && m.kind === 'text') announce(`${bot(m.author)?.name || 'Reply'}: ${String(m.body || '').replace(/[#*`>_]/g, '')}`);
     soon();
   });
   es.addEventListener('message_delete', (e) => {
@@ -1830,6 +1886,7 @@ function modal(html, { wide = false, cls = '', sticky = false } = {}) {
   if (MODAL_HOST?.isConnected) { MODAL_HOST.innerHTML = `<div class="modal embedded ${cls}">${html}</div>`; MODAL_HOST.scrollTop = 0; setTimeout(() => MODAL_HOST?.querySelector('input:not([type=checkbox]):not([type=color]), textarea')?.focus(), 30); return MODAL_HOST.firstElementChild; }
   MODAL_HOST = null;
   const root = $('#modal-root');
+  if (!$('.scrim', root)) MODAL_BACK = document.activeElement;
   root.innerHTML = `<div class="scrim"><div class="modal ${wide ? 'wide' : ''} ${sticky ? 'sticky' : ''} ${cls}" role="dialog" aria-modal="true">${html}</div></div>`;
   const scrim = $('.scrim', root);
   if (!sticky) scrim.addEventListener('mousedown', (e) => { if (e.target === scrim) closeModal(true); });
@@ -1846,7 +1903,12 @@ function closeModal(all = false) {
   if (!scrim || scrim.classList.contains('closing')) return;
   scrim.classList.add('closing');
   setTimeout(() => { if (root.contains(scrim)) root.innerHTML = ''; }, 160);
+  const back = MODAL_BACK; MODAL_BACK = null; if (back?.isConnected) back.focus(); // focus returns to what opened it
 }
+let MODAL_BACK = null;
+document.addEventListener('keydown', (e) => { const m = $('#modal-root .scrim:not(.closing) .modal'); if (m && !document.querySelector('.confirm-scrim')) trapTab(e, m); });
+// The thread arrow is a span inside the row button, so Enter/Space are wired by hand.
+document.addEventListener('keydown', (e) => { const c = e.target.closest?.('[data-expand]'); if (c && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); c.click(); } }, true);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!$('.modal.sticky')) closeModal(true); closePopover(); } });
 
 // Where this chat's context goes, from Claude Code's own /context report.
@@ -2054,7 +2116,7 @@ function roomModal(r) {
       const on = members.has(b.id);
       return `<label class="pick ${on ? 'on' : ''}">
         <input type="checkbox" data-member="${b.id}" ${on ? 'checked' : ''}>${avatar(b, 28)}<span>${esc(b.name)}</span>
-        ${on ? `<span class="lead"><input type="radio" name="lead" data-lead="${b.id}" ${lead === b.id ? 'checked' : ''}> Lead</span>` : ''}
+        ${on ? `<span class="lead"><input type="radio" name="lead" aria-label="Lead" data-lead="${b.id}" ${lead === b.id ? 'checked' : ''}> Lead</span>` : ''}
       </label>`;
     }).join('');
   };
@@ -2193,6 +2255,8 @@ document.addEventListener('click', async (e) => {
     ta.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') undo(); if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); save(); } });
     return;
   }
+  if (t.dataset.maMore !== undefined) { const more = t.nextElementSibling; more.hidden = !more.hidden; t.setAttribute('aria-expanded', String(!more.hidden)); return; }
+  if (t.dataset.unclamp !== undefined) { const pre = t.previousElementSibling; pre.classList.toggle('clamp'); t.textContent = pre.classList.contains('clamp') ? 'Show all' : 'Show less'; return; }
   if (t.dataset.runCode !== undefined) return runInTerminal(t.closest('.codeblk').querySelector('code').textContent);
   if (t.dataset.copyCode !== undefined) { const ok = await clip(t.closest('.codeblk').querySelector('code').textContent); buzz(6); t.textContent = ok ? 'Copied ✓' : 'Couldn’t copy'; t.classList.add('done'); setTimeout(() => { t.textContent = 'Copy'; t.classList.remove('done'); }, 1600); return; }
   if (t.dataset.pin) return togglePin(Number(t.dataset.pin));
@@ -2223,7 +2287,9 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.unattach) { attachments = attachments.filter((a) => a.key !== t.dataset.unattach); return drawAttachments(); }
   const act = t.dataset.act;
   if (act) closePopover();
+  if (act?.startsWith('home-pick:')) { localStorage.homeBot = act.slice(10); const hbIn = $('#home-bot'); if (hbIn) { hbIn.value = act.slice(10); renderMain(); $('#home-q')?.focus(); } return; }
   switch (act) {
+    case 'home-bots': e.stopPropagation(); return popover(t, S.data.bots.map((b) => ['home-pick:' + b.id, esc(b.name), avatar(b, 20)]));
     case 'new-menu': e.stopPropagation(); return popover(t, [...(cur ? [['new-thread', `New thread with ${esc(cur.name)}`, TI.chat]] : []), ['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['new-side-group', 'New sidebar group', ICON.folder], ['new-shared-project', 'New shared project', ICON.folder], ['new-code-project', 'New Nimbus Code project', CODE_ICON], ['market', 'Browse Connectors', ICON.grid]]);
     case 'more-menu': {
       e.stopPropagation(); if (!cur) return;
@@ -2232,7 +2298,9 @@ document.addEventListener('click', async (e) => {
       return popover(t, [['voice', 'Voice chat', ICON.voice], ['routines', `Routines${nR ? ` (${nR})` : ''}`, ICON.clock],
         comp ? ['computer', 'Computer', ICON.monitor] : ['browser', 'Browser', ICON.globe],
         ['plugins', `Plugins${cur.plugins.length ? ` (${cur.plugins.length})` : ''}`, ICON.plug], ['memory', 'Memory', ICON.book],
-        ['artifacts', `Artifacts${nA ? ` (${nA} new)` : ''}`, ICON.grid], ['pane-menu', 'Split pane', ICON.split], ['edit-bot', 'Bot settings', ICON.gear]]);
+        ['artifacts', `Artifacts${nA ? ` (${nA} new)` : ''}`, ICON.grid], ['pane-menu', 'Split pane', ICON.split], ['edit-bot', 'Bot settings', ICON.gear],
+        // On phones Files and Chat details live here instead of the header, so the bot's name fits.
+        ...(innerWidth <= 760 ? [['files', 'Files in this chat', ICON.folder], ['info', 'Chat details', ICON.sidebar]] : [])]);
     }
     case 'later': return laterModal(threadKey(), $('#msg')?.value || '');
     case 'home': $('#side').classList.remove('open'); return openHome();
@@ -2245,7 +2313,7 @@ document.addEventListener('click', async (e) => {
     case 'pro-tour': closeModal(); return setTimeout(() => tour(), 200);
     case 'pro-search': $('#side').classList.remove('open'); return searchPage();
     case 'home-ask': return homeAsk();
-    case 'claude': return claudeModal();
+    case 'claude': return openSettings('claude'); // one settings place: opens as a section of Settings
     case 'docs': return docsModal();
     case 'map': return mapPage();
     case 'office': return officePage();
@@ -2263,16 +2331,16 @@ document.addEventListener('click', async (e) => {
     case 'plugins': return botPluginsModal(cur);
     case 'market': $('#side').classList.remove('open'); return marketModal();
     case 'cc-plugins': $('#side').classList.remove('open'); return ccPluginsModal();
-    case 'appearance': return appearanceModal();
-    case 'language': return languageModal();
+    case 'appearance': return openSettings('appearance'); // one settings place: opens as a section of Settings
+    case 'language': return openSettings('language'); // one settings place: opens as a section of Settings
     case 'attach': return $('#file-pick').click();
     case 'dictate': return toggleDictation(t);
     case 'voice-mode': return voiceMode();
     case 'camera': return cameraModal();
     case 'voice': { const b = bot(S.current?.id); return b && startVoice({ api, thread: threadKey(), botName: b.name, avatarHtml: avatar(b, 28), character: { svg: critter(b.color, outfit(b)), color: b.color, ...outfit(b) }, toast }); }
-    case 'mfa': return mfaModal();
-    case 'server': return serverModal();
-    case 'log': return activityLogModal();
+    case 'mfa': return openSettings('mfa'); // one settings place: opens as a section of Settings
+    case 'server': return openSettings('server'); // one settings place: opens as a section of Settings
+    case 'log': return openSettings('log'); // one settings place: opens as a section of Settings
     case 'app-server': return window.NimbusApp?.changeServer();
     case 'app-update': return window.NimbusApp?.checkUpdate ? window.NimbusApp.checkUpdate() : toast('This version of the app can’t update itself yet: download it once from /nimbus.apk');
     case 'computer': return computerModal(cur);
@@ -2401,8 +2469,19 @@ document.addEventListener('submit', async (e) => {
   buzz(10);
   ta.value = ''; autosize(ta); $('#slash-hint')?.remove(); sessionDraft.delete(threadKey()); attachments = []; drawAttachments();
   try { await api(`/api/threads/${encodeURIComponent(threadKey())}/messages`, { method: 'POST', body: { text, files } }); kept.forEach((a) => a.preview && URL.revokeObjectURL(a.preview)); }
-  catch (err) { if (err.offline) { queueSend(threadKey(), text, files); return; } ta.value = text; attachments = kept; drawAttachments(); toast(err.message); }
+  catch (err) { if (err.offline) { queueSend(threadKey(), text, files); return; } ta.value = text; attachments = kept; drawAttachments(); sendError(err.message); }
 });
+// A failed send stays visible above the box (your text is put back) until you retry or type.
+function sendError(msg) {
+  $('#send-err')?.remove();
+  const el = document.createElement('div'); el.id = 'send-err'; el.className = 'send-err'; el.setAttribute('role', 'alert');
+  el.innerHTML = `<span>Not sent: ${esc(msg)}</span><button class="btn small" data-send-retry>Retry</button>`;
+  $('#composer')?.before(el);
+  el.querySelector('[data-send-retry]').onclick = () => { el.remove(); $('#composer')?.requestSubmit(); };
+  $('#msg')?.addEventListener('input', () => el.remove(), { once: true });
+}
+// Leaving with an unsent message (or an unsaved file edit) asks first.
+addEventListener('beforeunload', (e) => { if ($('#msg')?.value.trim() || $('#home-q')?.value.trim() || V.dirty) { e.preventDefault(); e.returnValue = ''; } });
 
 // Paste images/files into the message box, or drop them anywhere on the chat.
 document.addEventListener('paste', (e) => {
@@ -2619,7 +2698,7 @@ document.addEventListener('click', async (e) => {
     case 'edit': return openEditor(V.doc);
     case 'code': V.code = true; V.dirty = false; return drawViewer();
     case 'code-save': return saveHtml();
-    case 'code-close': if (V.dirty && !confirm('Discard unsaved changes?')) return; V.code = false; V.dirty = false; return drawViewer();
+    case 'code-close': if (V.dirty && !await askConfirm('Discard unsaved changes?', { ok: 'Discard' })) return; V.code = false; V.dirty = false; return drawViewer();
     case 'html-tab': { const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to open it'); w.opener = null;
       // Same sandbox as the pane, via a blob page that wraps it.
       const edited = editedHtml();
@@ -3053,24 +3132,29 @@ function renderHome() {
   const card = (title, body, extra = '') => `<section class="home-card ${extra}"><h3>${title}</h3>${body}</section>`;
   const row = (key, av, top, sub, right = '') => `<button class="home-row" data-open="${esc(key)}">${av}<span class="hr-meta"><b>${top}</b><small>${sub}</small></span>${right}</button>`;
   const recent = SIDE_ITEMS.filter((it) => it.last).slice(0, 6);
+  // Empty cards fold into one line, so failures and the Proxmox grid get the first screen.
+  const quiet = !working.length && !unread.length && !ranToday.length;
+  const hb = bot(Number(localStorage.homeBot)) || d.bots[0];
   return `<header class="head"><button class="icon-btn menu-btn" data-act="menu" aria-label="Menu">${ICON.menu}</button><b class="home-title">Home</b>
       <div class="actions" style="margin-left:auto"><button class="btn small" data-act="palette" title="Jump anywhere">${ICON.search}<span>Jump to…</span><kbd>Ctrl K</kbd></button></div></header>
     <div class="thread home"><div class="home-inner">
       <h1 class="home-hi">${greeting()}${first ? ', ' + esc(first) : ''}.</h1>
       <p class="home-sub">${working.length ? `${working.length} bot${working.length === 1 ? ' is' : 's are'} working` : 'All your bots are idle'}${d.approvals.length ? ` · <b>${d.approvals.length} waiting for you</b>` : ''}${unread.length ? ` · ${unread.length} unread` : ''}.</p>
       <form class="home-ask" id="home-ask" autocomplete="off">
-        <select id="home-bot" aria-label="Bot">${d.bots.map((b) => `<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select>
-        <input id="home-q" placeholder="Ask a bot something…" aria-label="Message">
+        <input type="hidden" id="home-bot" value="${hb ? hb.id : ''}">
+        <button type="button" class="home-pickbot" data-act="home-bots" aria-label="Choose a bot">${hb ? avatar(hb, 24) + `<span>${esc(hb.name)}</span>` : 'Bot'} ${ICON.chevron}</button>
+        <input id="home-q" placeholder="Ask ${hb ? esc(hb.name) : 'a bot'} something…" aria-label="Message">
         <button class="btn primary" data-act="home-ask" type="submit">Send</button>
       </form>
       <div class="home-grid">
         ${d.approvals.length ? card(`${ICON.lock} Needs you`, d.approvals.map((a) => row(a.thread, avatar(bot(a.bot_id), 30), esc(bot(a.bot_id)?.name || 'Bot'), esc(describeTool(a.tool, a.input)), `<span class="muted">${timeAgo(a.created_at)}</span>`)).join(''), 'urgent') : ''}
-        ${card('Working now', working.length ? working.map((b) => row('bot:' + b.id, avatar(b, 30), esc(b.name), esc(b.status.label || 'Working…'), '<span class="dot working"></span>')).join('') : '<div class="muted">Nobody is busy. Ask something above.</div>')}
-        ${card('Unread', unread.length ? unread.map((it) => row(it.key, it.av, esc(it.name), esc(it.last.text), `<span class="muted">${stamp(it.last.at)}</span>`)).join('') : '<div class="muted">You’re all caught up.</div>')}
-        ${card('Routines today', (ranToday.length ? ranToday.map((r) => row('bot:' + r.bot_id, avatar(bot(r.bot_id), 30), esc(bot(r.bot_id)?.name || 'Bot'), esc(r.prompt.slice(0, 80)), `<span class="muted">ran ${clock(r.last_run)}</span>`)).join('') : '<div class="muted">Nothing has run yet today.</div>')
-          + (d.upNext.length ? `<div class="home-next">Next: ${d.upNext.slice(0, 3).map((r) => `<span>${whenNext(r.next)} · ${esc(bot(r.bot_id)?.name || '')}</span>`).join('')}</div>` : ''))}
-        <section class="home-card wide" id="home-digest"><h3>Since yesterday</h3><div class="muted">Loading…</div></section>
+        ${quiet ? `<p class="home-quiet wide"><span class="dot"></span>All quiet: no one working, nothing unread, no routines yet today${d.upNext.length ? ` · next: ${whenNext(d.upNext[0].next)} · ${esc(bot(d.upNext[0].bot_id)?.name || '')}` : ''}.</p>` : ''}
+        <section class="home-card wide" id="home-digest"><h3>Since yesterday</h3>${SKEL}</section>
         ${d.proxmox ? `<section class="home-card wide" id="home-pve">${pveHomeHtml(pveLast)}</section>` : ''}
+        ${working.length ? card('Working now', working.map((b) => row('bot:' + b.id, avatar(b, 30), esc(b.name), esc(b.status.label || 'Working…'), '<span class="dot working"></span>')).join('')) : ''}
+        ${unread.length ? card('Unread', unread.map((it) => row(it.key, it.av, esc(it.name), esc(it.last.text), `<span class="muted">${stamp(it.last.at)}</span>`)).join('')) : ''}
+        ${quiet ? '' : card('Routines today', (ranToday.length ? ranToday.map((r) => row('bot:' + r.bot_id, avatar(bot(r.bot_id), 30), esc(bot(r.bot_id)?.name || 'Bot'), esc(r.prompt.slice(0, 80)), `<span class="muted">ran ${clock(r.last_run)}</span>`)).join('') : '<div class="muted">Nothing has run yet today.</div>')
+          + (d.upNext.length ? `<div class="home-next">Next: ${d.upNext.slice(0, 3).map((r) => `<span>${whenNext(r.next)} · ${esc(bot(r.bot_id)?.name || '')}</span>`).join('')}</div>` : ''))}
         ${card('Recent chats', recent.map((it) => row(it.key, it.av, esc(it.name), esc((it.last.author === 'user' ? 'You: ' : '') + it.last.text), `<span class="muted">${stamp(it.last.at)}</span>`)).join('') || '<div class="muted">No chats yet.</div>', 'wide')}
       </div>
     </div></div>`;
@@ -3079,7 +3163,7 @@ async function homeAsk() {
   const id = Number($('#home-bot')?.value), text = $('#home-q')?.value.trim();
   if (!id || !text) return $('#home-q')?.focus();
   try { await api(`/api/threads/${encodeURIComponent('bot:' + id)}/messages`, { method: 'POST', body: { text } }); openThread('bot:' + id); }
-  catch (e) { toast(e.message); }
+  catch (e) { toast(e.message, { type: 'bad', action: 'Retry', onAction: homeAsk, ms: 10000 }); }
 }
 document.addEventListener('submit', (e) => { if (e.target.id === 'home-ask') { e.preventDefault(); homeAsk(); } });
 
@@ -3178,7 +3262,7 @@ function openSettings(key = (['hmap', 'office'].includes(localStorage.setKey) ? 
       const item = SET_NAV.flatMap(([, i]) => i).find((i) => i[0] === k) || SET_NAV[1][1][0];
       if (!['hmap', 'office'].includes(item[0])) localStorage.setKey = item[0];
       el.querySelectorAll('[data-set]').forEach((b) => b.classList.toggle('on', b.dataset.set === item[0]));
-      MODAL_HOST = el.querySelector('#set-body'); MODAL_HOST.innerHTML = '<p class="muted">Loading…</p>';
+      MODAL_HOST = el.querySelector('#set-body'); MODAL_HOST.innerHTML = SKEL;
       (fn || item[3])();
     };
     el.addEventListener('click', async (e) => {
@@ -3191,4 +3275,4 @@ function openSettings(key = (['hmap', 'office'].includes(localStorage.setKey) ? 
 }
 
 // Shared with the feature modules (docedit.js, ...).
-export { $, ART, ED, ICON, JUST, S, V, api, applyTheme, avatar, bot, buzz, clip, closeInfo, closeModal, connect, copyText, describeTool, download, esc, fmtSize, getPrefs, md, modal, openThread, refreshState, renderMain, stamp, stopBrowserView, stopEditor, svg, timeAgo, toast, userName };
+export { $, ART, SKEL, askConfirm, ED, ICON, JUST, S, V, api, applyTheme, avatar, bot, buzz, clip, closeInfo, closeModal, connect, copyText, describeTool, download, esc, fmtSize, getPrefs, md, modal, openThread, refreshState, renderMain, stamp, stopBrowserView, stopEditor, svg, timeAgo, toast, userName };

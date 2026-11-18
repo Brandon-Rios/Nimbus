@@ -1,5 +1,5 @@
 // Settings windows (moved out of app.js): marketplace, plugins, Claude account, activity log, server settings, bot computers, two-factor, appearance, language, approve/reject.
-import { $, ICON, JUST, S, api, applyTheme, avatar, bot, buzz, clip, closeModal, connect, describeTool, download, esc, fmtSize, getPrefs, modal, openThread, refreshState, renderMain, stamp, timeAgo, toast } from './app.js';
+import { $, SKEL, askConfirm, ICON, JUST, S, api, applyTheme, avatar, bot, buzz, clip, closeModal, connect, describeTool, download, esc, fmtSize, getPrefs, modal, openThread, refreshState, renderMain, stamp, timeAgo, toast } from './app.js';
 import { THEMES } from './themes.js';
 import { LANGS, LANG_NAMES, uiLang, setUiLang } from './i18n.js';
 
@@ -11,7 +11,7 @@ async function marketModal(focus = '') {
   const el = modal(`<div class="market-top">${marketTabs('conn')}
       <label class="search big">${ICON.search}<input id="mk-q" placeholder="Search plugins and bots" autocomplete="off"></label>
       <button class="icon-btn" data-close aria-label="Close">${ICON.close}</button>
-    </div><div class="market-body" id="mk-body"><div class="muted">Loading…</div></div>`, { wide: true, cls: 'market' });
+    </div><div class="market-body" id="mk-body">${SKEL}</div>`, { wide: true, cls: 'market' });
   S.market = await api('/api/marketplace');
   let query = '';
   const row = (p, kind) => {
@@ -98,7 +98,7 @@ async function ccPluginsModal(fresh = false) {
     if (t.dataset.refresh !== undefined) return ccPluginsModal(true);
     const id = t.dataset.install || t.dataset.uninstall; if (!id || busy) return;
     const install = !!t.dataset.install;
-    if (!install && !confirm(`Remove ${id.split('@')[0]} from every bot?`)) return;
+    if (!install && !await askConfirm(`Remove ${id.split('@')[0]} from every bot?`, { ok: 'Remove' })) return;
     busy = id; draw();
     try {
       await api(`/api/cc-plugins/${install ? 'install' : 'uninstall'}`, { method: 'POST', body: { id } });
@@ -132,7 +132,7 @@ function installModal(p) {
     if (e.target.closest('[data-back]')) return marketModal();
     try {
       if (e.target.closest('[data-remove]')) {
-        if (!confirm(`Remove ${p.name}? Bots using it lose access.`)) return;
+        if (!await askConfirm(`Remove ${p.name}? Bots using it lose access.`, { ok: 'Remove' })) return;
         await api(`/api/plugins/${p.id}`, { method: 'DELETE' }); toast(`${p.name} removed`); return marketModal();
       }
       if (e.target.closest('[data-save]')) {
@@ -273,7 +273,7 @@ function claudeModal() {
     if (e.target.closest('[data-close]')) return closeModal();
     try {
       if (e.target.closest('[data-disconnect]')) {
-        if (!confirm('Remove the Claude token? Bots fall back to the server’s own Claude login, if it has one.')) return;
+        if (!await askConfirm('Remove the Claude token? Bots fall back to the server’s own Claude login, if it has one.', { ok: 'Remove' })) return;
         await api('/api/claude-account', { method: 'DELETE' }); closeModal(); await refreshState(); renderMain(); return toast('Token removed');
       }
       if (e.target.closest('[data-save]')) {
@@ -361,7 +361,7 @@ async function serverModal() {
         return;
       }
       if (e.target.closest('[data-update]')) {
-        if (!confirm('Update all bot computers now? Each one restarts, so any task running on a computer is interrupted. It takes a few minutes.')) return;
+        if (!await askConfirm('Update all bot computers now? Each one restarts, so any task running on a computer is interrupted. It takes a few minutes.', { ok: 'Update now', danger: false })) return;
         await api('/api/computers/update', { method: 'POST' });
         const st = $('#upd-status', el), btn = e.target.closest('[data-update]');
         btn.disabled = true;
@@ -455,7 +455,7 @@ async function computerModal(b) {
     if (rv) { rv.outerHTML = `<code class="secret-inline">${esc(rv.dataset.reveal)}</code>`; return; }
     if (e.target.closest('[data-start]')) { $('#cm-body', el).innerHTML = '<div class="muted">Starting… this can take up to a minute.</div>'; return load('POST'); }
     if (e.target.closest('[data-delete]')) {
-      if (!confirm(`Delete ${b.name}’s computer? Its files, browser and sign-ins are erased. The bot stays, and works on this PC until you turn “Own computer” back on.`)) return;
+      if (!await askConfirm(`Delete ${b.name}’s computer? Its files, browser and sign-ins are erased. The bot stays, and works on this PC until you turn “Own computer” back on.`)) return;
       try { await api(`/api/bots/${b.id}/computer`, { method: 'DELETE' }); closeModal(); await refreshState(); renderMain(); toast('Computer deleted'); }
       catch (err) { toast(err.message); }
     }

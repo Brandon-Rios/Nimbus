@@ -201,12 +201,16 @@ export async function digestCard() {
   for (const w of d.down) lines.push(`<li class="bad"><span class="ex-dot down"></span><b>${X.esc(w.name)}</b> is down <span class="muted">· ${ago(w.since)}${w.bot_id ? ` · ${name(w.bot_id)}` : ''}</span></li>`);
   for (const c of d.changes.filter((c) => c.state === 'up').slice(0, 4)) lines.push(`<li><span class="ex-dot up"></span>${X.esc(c.name)} came back <span class="muted">· ${ago(c.at)}</span></li>`);
   for (const p of d.plays) lines.push(`<li><span class="ex-dot ${p.last_ok ? 'up' : 'down'}"></span>Playbook “${X.esc(p.name)}” ${p.last_ok ? 'worked' : 'failed'} <span class="muted">· ${ago(p.last_run)}</span></li>`);
-  if (d.failed.length) lines.push(`<li><span class="ex-dot down"></span>${d.failed.length} task${d.failed.length === 1 ? '' : 's'} failed <span class="muted">· ${[...new Set(d.failed.map((f) => name(f.bot_id)))].join(', ')}</span></li>`);
+  if (d.failed.length) lines.unshift(`<li class="bad"><span class="ex-dot down"></span><b>${d.failed.length} task${d.failed.length === 1 ? '' : 's'} failed</b> <span class="muted">· ${[...new Set(d.failed.map((f) => name(f.bot_id)))].join(', ')}</span><button class="btn small" data-open="${X.esc(d.failed[0].thread || 'bot:' + d.failed[0].bot_id)}">Open</button></li>`);
   for (const m of d.later) lines.push(`<li><span class="ex-dot unknown"></span>Sends ${when(m.at)}: <span class="muted">${X.esc(m.text.slice(0, 60))}</span></li>`);
   const total = d.runs.reduce((s, r) => s + r.n, 0);
+  // Failures or a service down make this the loudest card on Home.
+  box.classList.toggle('urgent', !!(d.failed.length || d.down.length));
+  const I = X.ICON, link = (attr, icon, label) => `<button class="btn small ghost" ${attr}>${icon}<span>${label}</span></button>`;
   box.innerHTML = `<h3>Since yesterday</h3>
-    <div class="dg-top"><span class="dg-big ${d.down.length ? 'bad' : 'ok'}">${d.watched.n ? `${d.watched.up || 0}/${d.watched.n}` : '—'}</span><span>${d.watched.n ? (d.down.length ? 'services up' : 'services up · all good') : 'Nothing watched yet'}</span>
+    <div class="dg-top">${d.watched.n ? `<span class="dg-big ${d.down.length ? 'bad' : 'ok'}">${d.watched.up || 0}/${d.watched.n}</span><span>${d.down.length ? 'services up' : 'services up · all good'}</span>`
+      : `<span></span><span>Nothing watched yet <button class="btn small" data-ex-open="watchdog">Set up Watchdog</button></span>`}
       <span class="dg-big">${total}</span><span>tasks run${d.runs[0] ? ` · busiest ${name(d.runs[0].bot_id)}` : ''}</span></div>
     ${lines.length ? `<ul class="dg-list">${lines.join('')}</ul>` : '<div class="muted">A quiet day: nothing broke, nothing waiting.</div>'}
-    <div class="dg-links"><button class="linkish" data-ex-open="watchdog">Watchdog</button> · <button class="linkish" data-ex-open="playbooks">Playbooks</button> · <button class="linkish" data-ex-open="backups">Backups</button> · <button class="linkish" data-act="map">Homelab map</button> · <button class="linkish" data-act="office">Bot office</button> · <a href="/status" target="_blank">Status page</a></div>`;
+    <div class="dg-links">${link('data-ex-open="watchdog"', I.bell, 'Watchdog')}${link('data-ex-open="playbooks"', I.book, 'Playbooks')}${link('data-ex-open="backups"', I.box, 'Backups')}${link('data-act="map"', I.monitor, 'Homelab map')}${link('data-act="office"', I.home, 'Bot office')}<a class="btn small ghost" href="/status" target="_blank" rel="noopener">${I.globe}<span>Status page</span></a></div>`;
 }
