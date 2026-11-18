@@ -1839,3 +1839,9 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline-offs
 .file-del svg { width: 14px; height: 14px; }
 .file-img-wrap:hover .file-del, .file-del:focus-visible { opacity: 1; }
 @media (hover: none) { .file-del { opacity: .85; } }
+/* Phones: the message box gets its own full-width row; the tool buttons and Send sit below it. */
+@media (max-width: 600px) {
+  .composer form { flex-wrap: wrap; align-items: center; }
+  .composer form > textarea { order: -1; flex: 1 0 100%; padding: 8px 10px 4px; }
+  .composer form > .send { margin-left: auto; }
+}

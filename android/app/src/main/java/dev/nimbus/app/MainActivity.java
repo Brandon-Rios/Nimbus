@@ -83,7 +83,7 @@ public class MainActivity extends Activity {
                 pageHost = Uri.parse(url).getHost();
                 CookieManager.getInstance().flush();
                 deliverShare();
-                if (CookieManager.getInstance().getCookie(Trust.serverUrl(MainActivity.this)) != null) startEvents();
+                if (CookieManager.getInstance().getCookie(Trust.serverUrl(MainActivity.this)) != null) { startEvents(); Updater.check(MainActivity.this, false); }
             }
             @Override public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) {
                 if (r.isForMainFrame()) askForUrl("Couldn’t reach Nimbus (" + e.getDescription() + "). Check the address:");
@@ -130,6 +130,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        if (Updater.ACTION_DONE.equals(intent.getAction())) { Updater.onInstallStatus(this, intent); return; }
         if (readShare(intent)) { deliverShare(); return; }
         String thread = intent.getStringExtra("thread");
         if (thread != null) web.evaluateJavascript("location.hash = " + org.json.JSONObject.quote(thread), null);
@@ -253,6 +254,8 @@ public class MainActivity extends Activity {
     private volatile String pageHost = "";
     private boolean ownPage() { String h = Uri.parse(Trust.serverUrl(this)).getHost(); return h != null && h.equals(pageHost); }
     private class Bridge {
+        @android.webkit.JavascriptInterface public void checkUpdate() { if (!ownPage()) return; runOnUiThread(() -> Updater.check(MainActivity.this, true)); }
+        @android.webkit.JavascriptInterface public String version() { return String.valueOf(Updater.installedVersion(MainActivity.this)); }
         @android.webkit.JavascriptInterface public void changeServer() { if (!ownPage()) return; runOnUiThread(() -> askForUrl("Your Nimbus address:")); }
         /** Downloads (exports, file cards): the page fetches the file and hands it over; saved to Downloads, then opened. */
         @android.webkit.JavascriptInterface public void saveFile(String name, String mime, String b64) {

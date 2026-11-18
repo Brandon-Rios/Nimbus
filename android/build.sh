@@ -20,5 +20,9 @@ export NIMBUS_APP_VERSION_CODE=${NIMBUS_APP_VERSION_CODE:-$(( $(git rev-list --c
 export NIMBUS_APP_VERSION_NAME="2.$NIMBUS_APP_VERSION_CODE"
 echo "sdk.dir=$ANDROID_HOME" > local.properties
 "$HOME/opt/gradle/bin/gradle" --quiet assembleRelease
-cp app/build/outputs/apk/release/app-release.apk ../public/nimbus.apk
+cp app/build/outputs/apk/release/app-release.apk ../public/nimbus.apk.tmp
+SHA=$(sha256sum ../public/nimbus.apk.tmp | cut -d' ' -f1)
+mv ../public/nimbus.apk.tmp ../public/nimbus.apk
+# What the app checks for updates; written after the APK is in place, so it never announces one that isn't there yet.
+printf '{"versionCode":%s,"versionName":"%s","sha256":"%s"}\n' "$NIMBUS_APP_VERSION_CODE" "$NIMBUS_APP_VERSION_NAME" "$SHA" > ../public/nimbus-apk.json
 echo "Built Nimbus $NIMBUS_APP_VERSION_NAME -> public/nimbus.apk"

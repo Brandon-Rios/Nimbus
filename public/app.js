@@ -3466,7 +3466,7 @@ document.addEventListener('click', async (e) => {
     case 'plan-toggle': S.planFirst = !S.planFirst; t.classList.toggle('on', S.planFirst); t.setAttribute('aria-pressed', S.planFirst); return toast(S.planFirst ? 'Plan first: the bot plans, you approve once, then it runs' : 'Plan first off', { ms: 2500 });
     case 'artifacts': return openArtifacts();
     case 'files': return filesModal();
-    case 'user-menu': e.stopPropagation(); return popover(t, [['pro-settings', 'Settings', ICON.gear], ['pro-search', 'Search messages', ICON.globe], ['pro-new', `What’s new${document.body.classList.contains('has-new') ? ' •' : ''}`, ICON.book], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
+    case 'user-menu': e.stopPropagation(); return popover(t, [['pro-settings', 'Settings', ICON.gear], ['pro-search', 'Search messages', ICON.globe], ['pro-new', `What’s new${document.body.classList.contains('has-new') ? ' •' : ''}`, ICON.book], ...(window.NimbusApp ? [['app-update', 'App: check for updates', ICON.download], ['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
     case 'new-bot': return botModal();
     case 'edit-bot': return botModal(cur);
     case 'new-room': return roomModal();
@@ -3488,6 +3488,7 @@ document.addEventListener('click', async (e) => {
     case 'server': return serverModal();
     case 'log': return activityLogModal();
     case 'app-server': return window.NimbusApp?.changeServer();
+    case 'app-update': return window.NimbusApp?.checkUpdate ? window.NimbusApp.checkUpdate() : toast('This version of the app can’t update itself yet: download it once from /nimbus.apk');
     case 'computer': return computerModal(cur);
     case 'reset': await api(`/api/bots/${cur.id}/reset`, { method: 'POST', body: { thread: threadKey() } }); return;
     case 'new-thread': { const t = threadOf(threadKey()); return newThread(cur.id, t?.kind === 'chat' ? t.project_id : null); }
