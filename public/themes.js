@@ -16,6 +16,7 @@ export const THEMES = {
   rose: t('Rosé', 'dark', '#eb6f92', '#191724 #1f1d2e #232136 #26233a #2a273f #393552 #2a283e #403d58 #e0def4 #908caa #6e6a86 #26233a #ebbcba #191724 #2a273f #393552 #ebbcba #191724'),
   ocean: t('Ocean', 'dark', '#22d3ee', '#07141c #0b1c26 #0e222e #112834 #142e3b #1a3a4a #163442 #22485a #e1f3f8 #86a9b6 #577784 #112834 #9be7f5 #07141c #163442 #1d4153 #9be7f5 #07141c'),
   contrast: t('High Contrast', 'dark', '#ffd400', '#000000 #0a0a0a #111111 #111111 #1e1e1e #2a2a2a #5a5a5a #8a8a8a #ffffff #d0d0d0 #a0a0a0 #1a1a1a #ffffff #000000 #222222 #333333 #ffffff #000000'),
+  oled: t('True Black (OLED)', 'dark', '#7aa2ff', '#000000 #000000 #000000 #050505 #121212 #1a1a1a #161616 #262626 #f2f2f2 #9a9a9a #5c5c5c #0b0b0b #1c1c1c #f2f2f2 #111111 #1c1c1c #f2f2f2 #000000'),
   paper: t('Paper', 'light', '#b0562a', '#fbf7ef #f3ecdf #efe7d8 #fffcf6 #ebe2d1 #e3d8c4 #e4dac8 #d3c6ae #2b2620 #776c5d #a89c88 #f1e9da #2b2620 #fbf7ef #ece3d2 #e3d8c4 #2b2620 #fbf7ef'),
   solarizedLight: t('Solarized Light', 'light', '#1d6fa8', '#fdf6e3 #f5eedb #eee8d5 #fffbef #e9e2cf #e1d9c4 #e4ddc9 #d3cbb5 #073642 #586e75 #93a1a1 #eee8d5 #073642 #fdf6e3 #eee8d5 #e1d9c4 #073642 #fdf6e3'),
   sky: t('Sky', 'light', '#2563eb', '#f7faff #eef4fd #e9f0fb #ffffff #e1eafa #d6e2f7 #dbe5f5 #c4d4ee #0f1b33 #5a6b8a #93a2bd #e8effb #1d4ed8 #ffffff #e6eefb #d6e2f7 #1d4ed8 #ffffff'),
