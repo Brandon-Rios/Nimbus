@@ -40,7 +40,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
 const PORT = Number(process.env.PORT || 8787);
 process.env.PORT = String(PORT);
-const HOST = process.env.HOST || '0.0.0.0';
+// Address to listen on: 0.0.0.0 = every interface (default); 127.0.0.1 = this machine only, or a reverse proxy's address.
+const HOST = process.env.NIMBUS_HOST || process.env.HOST || '0.0.0.0';
 const PASSWORD = process.env.NIMBUS_PASSWORD || '';
 const ALLOWED_EMAILS = (process.env.NIMBUS_ALLOWED_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
 const WINDOW_BUDGET = Number(process.env.NIMBUS_WINDOW_BUDGET_USD || 0);
@@ -594,8 +595,9 @@ setInterval(async () => {
 }, 5 * 60_000).unref();
 
 const memHash = (t) => crypto.createHash('sha1').update(t).digest('hex');
-route('GET', '/api/bots/:id/memory', (req, res, p) => { const text = fs.readFileSync(path.join(botDir(p.id), 'MEMORY.md'), 'utf8'); json(res, 200, { text, hash: memHash(text) }); });
+route('GET', '/api/bots/:id/memory', (req, res, p) => { if (!q('SELECT 1 FROM bots WHERE id=?').get(Number(p.id))) return json(res, 404, { error: 'No such bot' }); const text = fs.readFileSync(path.join(botDir(p.id), 'MEMORY.md'), 'utf8'); json(res, 200, { text, hash: memHash(text) }); });
 route('PUT', '/api/bots/:id/memory', async (req, res, p) => {
+  if (!q('SELECT 1 FROM bots WHERE id=?').get(Number(p.id))) return json(res, 404, { error: 'No such bot' });
   const b = await body(req), f = path.join(botDir(p.id), 'MEMORY.md');
   // The bot may have added a line while you were editing: don't overwrite it with the copy you opened.
   const cur = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
@@ -1360,6 +1362,9 @@ const APP_CSP = ["default-src 'self'", "script-src 'self'", "style-src 'self' 'u
   "img-src 'self' data: blob: https:", "media-src 'self' data: blob:", "connect-src 'self' ws: wss:", "frame-src 'self' blob: data: http: https:", "worker-src 'self' blob:",
   "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'self'"].join('; ');
 const LOGIN_PAGE = fs.readFileSync(path.join(PUBLIC, 'login.html'));
+// The login page's one inline script is allowed by its hash only; everything else on it is locked down.
+const LOGIN_SCRIPT = /<script>([\s\S]*?)<\/script>/.exec(String(LOGIN_PAGE))?.[1] || '';
+const LOGIN_CSP = ["default-src 'self'", `script-src 'sha256-${crypto.createHash('sha256').update(LOGIN_SCRIPT).digest('base64')}'`, "style-src 'self' 'unsafe-inline'", "img-src 'self' data:", "connect-src 'self'", "form-action 'self'", "frame-ancestors 'none'", "base-uri 'none'", "object-src 'none'"].join('; ');
 
 route('POST', '/api/login', async (req, res) => {
   const ip = clientIp(req);
@@ -1600,7 +1605,7 @@ async function handle(req, res) {
     if (!checkAuth(req, res, url)) return;
     const desk = url.pathname.match(DESK_RE);
     if (desk) return await proxyDesktop(req, res, desk, url);
-    if (url.pathname === '/login') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(LOGIN_PAGE); }
+    if (url.pathname === '/login') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': LOGIN_CSP, 'x-frame-options': 'DENY', 'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin' }); return res.end(LOGIN_PAGE); }
     for (const r of routes) {
       const m = r.method === req.method && url.pathname.match(r.re);
       if (m) return await r.fn(req, res, m.groups || {}, url);

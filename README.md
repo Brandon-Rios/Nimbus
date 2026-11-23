@@ -117,6 +117,7 @@ journalctl -u nimbus -f      # logs
 | `NIMBUS_RUN_TIMEOUT_MIN` | `45` | Kill a run that takes longer than this |
 | `CLAUDE_BIN` | `claude` | Path to Claude Code |
 | `NIMBUS_HTTPS_PORT` | `8443` | HTTPS port with a self-signed certificate (`0` = off) |
+| `NIMBUS_HOST` | `0.0.0.0` | Address Nimbus listens on: `0.0.0.0` = every interface, `127.0.0.1` = this machine only (use behind a local proxy) |
 | `NIMBUS_TRUSTED_PROXIES` | — | Reverse proxies in front of Nimbus (IPs, comma-separated), so login limits count the real device |
 | `NIMBUS_TRUSTED_BOTS` | — | Bot numbers allowed to read Nimbus's data and change its code |
 | `NIMBUS_SANDBOX` | — | Run bots in a bubblewrap sandbox: `all`, bot numbers, or `all,-3` |

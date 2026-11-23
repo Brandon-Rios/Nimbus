@@ -293,13 +293,13 @@ export function registerAutomation(route, { json, body, postToThread }) {
     setSetting('bot_budgets', JSON.stringify(out)); json(res, 200, { budgets: out });
   });
   route('GET', '/api/extras/digest', (req, res) => json(res, 200, digest()));
-  route('GET', '/api/extras/status-page', (req, res) => json(res, 200, { on: getSetting('status_page') !== '0' }));
+  route('GET', '/api/extras/status-page', (req, res) => json(res, 200, { on: getSetting('status_page') === '1' }));
   route('PUT', '/api/extras/status-page', async (req, res) => { const b = await body(req); setSetting('status_page', b.on ? '1' : '0'); json(res, 200, { on: !!b.on }); });
   // Public (no login): names and up/down only, no addresses. Turn off in Settings → Watchdog.
   route('GET', '/status', (req, res) => {
-    if (getSetting('status_page') === '0') { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('Not found'); }
+    if (getSetting('status_page') !== '1') { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('Not found'); }
     const rows = q('SELECT name, state FROM watches WHERE enabled=1 ORDER BY id').all();
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'", 'x-frame-options': 'DENY', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' });
     res.end(STATUS_HTML(rows, new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })));
   });
 }
