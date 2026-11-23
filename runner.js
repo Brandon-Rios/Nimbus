@@ -257,10 +257,12 @@ export const isUserSource = (s) => s === 'user' || s === 'the user';
 // other bots can run on a lighter model, and so can short plain questions from you. Off unless set.
 export function routedModel(bot, source, prompt) {
   if (source === 'auto-compact') return null;
-  const auto = getSetting('route_auto') || '', short = getSetting('route_short') || '';
-  if (!isUserSource(source)) return auto || null;
+  // Default is Haiku for automatic runs and short plain questions; set the value to 'off' to stop routing.
+  const auto = getSetting('route_auto') || 'haiku', short = getSetting('route_short') || 'haiku';
+  if (auto === 'off' && !isUserSource(source)) return null;
+  if (!isUserSource(source)) return auto;
   const p = String(prompt || '').trim();
-  if (short && p.length <= 160 && !/[\n`{}<>|$]/.test(p) && !/^\//.test(p) && !/\b(fix|debug|install|configure|build|write|deploy|migrate|delete|refactor)\b/i.test(p)) return short;
+  if (short !== 'off' && p.length <= 160 && !/[\n`{}<>|$]/.test(p) && !/^\//.test(p) && !/\b(fix|debug|install|configure|build|write|deploy|migrate|delete|refactor)\b/i.test(p)) return short;
   return null;
 }
 export const runGuards = []; // (botId, source) -> reason to skip, or null

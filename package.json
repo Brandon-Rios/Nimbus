@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node --no-warnings --env-file-if-exists=.env server.js",
-    "test": "node test/gate.mjs && node test/stream.mjs && node test/widgets.mjs && node test/skill-match.mjs && node test/run.mjs"
+    "test": "node test/gate.mjs && node test/stream.mjs && node test/widgets.mjs && node test/skill-match.mjs && node test/memory.mjs && node test/run.mjs"
   },
   "engines": {
     "node": ">=22.13"

@@ -3,6 +3,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import { promoteMemory } from './memory.js';
 
 export const DATA_DIR = path.resolve(process.env.NIMBUS_DATA || './data');
 // Only the Nimbus user can read the data folder and database files.
@@ -164,13 +165,17 @@ If an answer takes longer than ~4 minutes you get a run id; fetch it later with:
 - Files you save under ~/Downloads or ~/work show up in Nimbus (computer dialog → Files), so the user can download them.` : ''}`;
 }
 
-// One shared, current description of the homelab (data/shared/HOMELAB.md) goes into every brief,
-// so bots don't each keep their own copy that drifts out of date.
-function homelabSection() {
-  try {
-    const facts = fs.readFileSync(path.join(DATA_DIR, 'shared', 'HOMELAB.md'), 'utf8').trim();
-    return facts ? `\n## Homelab facts (shared by all bots; trust this over your own notes)\n${facts}\n` : '';
-  } catch { return ''; }
+// One shared, current description of the homelab (data/shared/HOMELAB.md) is copied into each local bot folder
+// on every brief write, so the copies never drift from the shared file.
+function homelabText() {
+  try { return fs.readFileSync(path.join(DATA_DIR, 'shared', 'HOMELAB.md'), 'utf8').trim(); } catch { return ''; }
+}
+// Local bots read a copy in their own folder when a task needs it (keeps every brief short and every
+// run cheap). Remote bots on the bot computer can't read this server's files, so they get the text inline.
+function homelabSection(facts, remote) {
+  if (!facts) return '';
+  if (!remote) return '\n## Homelab facts\nRead HOMELAB.md in this folder before any task about the network, Proxmox, guests, DNS or backups. It is the current shared truth; trust it over your own notes.\n';
+  return `\n## Homelab facts (shared by all bots; trust this over your own notes)\n${facts}\n`;
 }
 
 // Each bot gets a workspace folder. CLAUDE.md there is its standing brief;
@@ -180,6 +185,10 @@ export function writeBotBrief(bot, remote = false) {
   const dir = botDir(bot.id);
   const mem = path.join(dir, 'MEMORY.md');
   if (!fs.existsSync(mem)) fs.writeFileSync(mem, `# What ${bot.name} has learned\n\n`);
+  // Keep MEMORY.md short: older lines move to LONG_MEMORY.md (memory.js). Only for bots whose folder is on this server.
+  if (!remote) promoteMemory(dir, { cap: settingNumber('memory_cap', 40), minDays: settingNumber('memory_min_days', 7) });
+  const facts = homelabText();
+  if (!remote && facts) fs.writeFileSync(path.join(dir, 'HOMELAB.md'), facts + '\n');
   fs.writeFileSync(path.join(dir, 'CLAUDE.md'), `# You are ${bot.name}
 ${bot.role ? `Role: ${bot.role}\n` : ''}
 You are one bot on the user's personal team in an app called Nimbus. You run headless:
@@ -192,13 +201,14 @@ ${bot.instructions || '(none yet)'}
 - Do the work, then reply briefly: what you did, what needs the user, what's next.
 - Risky actions (sending, paying, deleting, pushing, merging) may be paused for the user's
   approval automatically. If one is rejected, read the reason and adjust.
-- When the user tells you a preference or rule, add one line to MEMORY.md in this folder.
+- When the user tells you a preference or rule, add one line to MEMORY.md in this folder and end it with [pin] so it always stays there.
 - This folder is your workspace. Keep notes and files here.
+- Keep command and log output short (head, tail, grep, a line limit). Long output stays in your context and is paid for on every later step.
 ${getSetting('reply_lang') ? `- Always reply to the user in ${getSetting('reply_lang')}, even if they write in another language (code, commands and file names stay as they are).\n` : ''}
 ${remote ? '' : filesSection()}${remote ? '' : threadsSection()}${remote ? '' : widgetsSection()}
 ## Your team
 ${teamSection(bot, remote)}
-${homelabSection()}
+${homelabSection(facts, remote)}
 
 ## Team memory (shared by all bots)
 - Facts any teammate may need (IPs, versions, where things are, decisions, fixes that worked) go in team memory,
@@ -210,6 +220,8 @@ ${homelabSection()}
 
 ## Memory
 @MEMORY.md
+
+LONG_MEMORY.md in this folder holds older lessons and is not loaded. When you need something that is not above, search it: grep -n -i "<words>" LONG_MEMORY.md, then read the matching lines. If you need one often, copy it back into MEMORY.md. MEMORY.md stays short: its oldest lines move to LONG_MEMORY.md when it gets long, except lines marked [pin].
 `);
   return dir;
 }
@@ -226,6 +238,11 @@ db.exec(`CREATE INDEX IF NOT EXISTS runs_bot_started ON runs(bot_id, started_at)
   CREATE INDEX IF NOT EXISTS runs_thread_status ON runs(thread, status);
   CREATE INDEX IF NOT EXISTS runs_status ON runs(status);
   CREATE INDEX IF NOT EXISTS approvals_status ON approvals(status, bot_id);`);
+// A numeric setting, with a default when it is empty (0 is a real value).
+export function settingNumber(key, fallback) {
+  const v = getSetting(key);
+  return v === '' || v === undefined ? fallback : Number(v);
+}
 export function getSetting(key, envName) {
   const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
   return row ? row.value : (envName ? process.env[envName] || '' : '');

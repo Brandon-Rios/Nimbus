@@ -1061,7 +1061,7 @@ const SETTINGS = [
   { key: 'agent_url', env: 'NIMBUS_AGENT_URL' }, { key: 'agent_token', env: 'NIMBUS_AGENT_TOKEN', secret: true }, { key: 'callback_url', env: 'NIMBUS_CALLBACK_URL' },
   { key: 'pve_host' }, { key: 'pve_token_id' }, { key: 'pve_token_secret', secret: true },
   { key: 'backup_target' }, { key: 'auto_compact_pct', env: 'NIMBUS_AUTO_COMPACT_PCT' },
-  { key: 'thread_limit' }, { key: 'usage_guard_pct' },
+  { key: 'thread_limit' }, { key: 'usage_guard_pct' }, { key: 'memory_cap' }, { key: 'memory_min_days' },
   { key: 'trusted_proxies', env: 'NIMBUS_TRUSTED_PROXIES' }, { key: 'trusted_bots', env: 'NIMBUS_TRUSTED_BOTS' }, { key: 'sandbox', env: 'NIMBUS_SANDBOX' }
 ];
 route('GET', '/api/settings', (req, res) => {
@@ -1077,6 +1077,8 @@ route('PUT', '/api/settings', async (req, res) => {
     if (s.key === 'auto_compact_pct' && v && !(Number(v) >= 0 && Number(v) <= 95)) return json(res, 400, { error: 'Auto-compact must be 0 (off) to 95' });
     if (s.key === 'thread_limit' && v && !/^[123]$/.test(v)) return json(res, 400, { error: 'Threads at once per bot: 1, 2 or 3' });
     if (s.key === 'usage_guard_pct' && v && !(Number(v) >= 0 && Number(v) <= 90)) return json(res, 400, { error: 'Usage guard: 0 to 90 (% of the 5-hour limit left)' });
+    if (s.key === 'memory_cap' && v && !(Number(v) >= 5 && Number(v) <= 200)) return json(res, 400, { error: 'Short-term memory: 5 to 200 lines' });
+    if (s.key === 'memory_min_days' && v && !(Number(v) >= 0 && Number(v) <= 365)) return json(res, 400, { error: 'Memory minimum age: 0 to 365 days' });
     if (s.key === 'trusted_proxies' && v && !/^[\d.:a-f]+([\s,]+[\d.:a-f]+)*$/i.test(v)) return json(res, 400, { error: 'Trusted proxies: IP addresses separated by commas, e.g. 192.168.1.2' });
     if (s.key === 'trusted_bots' && v && !/^\d+([\s,]+\d+)*$/.test(v)) return json(res, 400, { error: 'Trusted bots: bot numbers separated by commas, e.g. 3' });
     if (s.key === 'sandbox' && v && !/^(off|all|-?\d+)([\s,]+-?\d+)*$/i.test(v.replace(/^all\b/i, 'all'))) return json(res, 400, { error: 'Sandbox: off, all, bot numbers (e.g. 5,9), or all,-3 for every bot but #3' });
