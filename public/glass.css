@@ -1,0 +1,79 @@
+/* Liquid Glass theme (themes.js "glass" sets data-look="glass" and the palette).
+   Rules: glass only on chrome that floats over content (sidebar, header, composer, tab bar)
+   and on overlays (windows, menus, palette). Content cards stay flat and quiet. Never glass
+   inside glass. One light source (top), one rim, text on solid-enough fills for 4.5:1. */
+
+html[data-look="glass"] {
+  --g-fill: rgba(28, 28, 32, .55);
+  --g-fill-strong: rgba(24, 24, 28, .82);
+  --g-rim: rgba(255, 255, 255, .10);
+  --g-hi: rgba(255, 255, 255, .14);
+  --g-blur: blur(24px) saturate(160%);
+}
+html[data-look="glass"] body {
+  background: radial-gradient(900px 600px at 15% -10%, rgba(120, 140, 255, .10), transparent 70%),
+              radial-gradient(800px 600px at 100% 110%, rgba(255, 255, 255, .05), transparent 70%), #000 !important;
+  background-attachment: fixed !important;
+}
+html[data-look="glass"] :is(.app, .main, .panes) { background: transparent !important; }
+
+/* Chrome: sidebar, header, composer box, phone tab bar */
+html[data-look="glass"] :is(.side, .head, .composer form, #tabbar) {
+  background: var(--g-fill) !important;
+  backdrop-filter: var(--g-blur); -webkit-backdrop-filter: var(--g-blur);
+  border: 1px solid var(--g-rim) !important;
+  box-shadow: inset 0 1px 0 var(--g-hi), 0 8px 30px rgba(0, 0, 0, .45) !important;
+}
+html[data-look="glass"] .composer { background: transparent !important; border: 0 !important; box-shadow: none !important; }
+@media (min-width: 761px) {
+  html[data-look="glass"] .side { margin: 10px 0 10px 10px; border-radius: 18px; height: calc(100vh - 20px); }
+  html[data-look="glass"] .head { margin: 10px 10px 0; border-radius: 14px; }
+}
+html[data-look="glass"] .composer form { border-radius: 24px; }
+
+/* Overlays: more solid so text stays readable over anything */
+html[data-look="glass"] :is(.scrim > .modal, .popover, .pal) {
+  background: var(--g-fill-strong) !important;
+  backdrop-filter: blur(30px) saturate(170%); -webkit-backdrop-filter: blur(30px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, .12) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 24px 60px rgba(0, 0, 0, .6) !important;
+  border-radius: 18px !important;
+}
+html[data-look="glass"] .scrim { background: rgba(0, 0, 0, .55) !important; }
+/* Anything inside an overlay is flat: no glass in glass */
+html[data-look="glass"] :is(.scrim > .modal, .popover, .pal) :is(.modal, .home-card, .card, section) {
+  background: rgba(255, 255, 255, .03) !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  box-shadow: none !important; border-color: rgba(255, 255, 255, .07) !important;
+}
+
+/* Content cards: flat, quiet surface with a hairline */
+html[data-look="glass"] :is(.home-card, .home-ask) {
+  background: rgba(255, 255, 255, .04) !important;
+  border: 1px solid rgba(255, 255, 255, .08) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05) !important;
+  border-radius: 18px !important;
+}
+
+/* Selected row and small controls: tint, not glass */
+html[data-look="glass"] .side-item.active, html[data-look="glass"] .side-sub-item.active { background: rgba(255, 255, 255, .09) !important; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06); }
+html[data-look="glass"] .side input, html[data-look="glass"] #home-q { background: transparent !important; border: 0 !important; box-shadow: none !important; }
+html[data-look="glass"] #home-q::placeholder { color: rgba(255, 255, 255, .55); }
+html[data-look="glass"] .btn:not(.primary) { background: rgba(255, 255, 255, .06) !important; border: 1px solid rgba(255, 255, 255, .10) !important; }
+html[data-look="glass"] .btn:not(.primary):hover { background: rgba(255, 255, 255, .11) !important; }
+html[data-look="glass"] :is(.btn.primary, button.primary, .composer .send) { background: #f2f2f4 !important; color: #000 !important; border: 0 !important; }
+html[data-look="glass"] :focus-visible { outline: 2px solid #8fa8ff; outline-offset: 2px; }
+
+/* Phones: lighter blur; sidebar drawer keeps its own placement */
+@media (max-width: 760px) {
+  html[data-look="glass"] :is(.side, .head, .composer form, #tabbar, .scrim > .modal, .popover, .pal) { backdrop-filter: blur(14px) saturate(150%); -webkit-backdrop-filter: blur(14px) saturate(150%); }
+  html[data-look="glass"] .side { background: var(--g-fill-strong) !important; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  html[data-look="glass"] * { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+  html[data-look="glass"] :is(.side, .head, .composer form, #tabbar, .scrim > .modal, .popover, .pal) { background: #161618 !important; }
+}
+
+/* Work-step timeline: the rail hides behind each mark, so marks need an opaque fill
+   (the theme's --panel is see-through, which let the line run through the checks) */
+html[data-look="glass"] .trace { background: #111114 !important; }
+html[data-look="glass"] .trace .step .mark { background: #111114 !important; }

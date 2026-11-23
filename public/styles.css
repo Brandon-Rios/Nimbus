@@ -8,10 +8,12 @@
   color-scheme: dark;
 }
 :root[data-theme="light"] {
-  --bg: #ffffff; --side: #f6f6f7; --panel: #f3f3f5; --card: #ffffff; --hover: #ececef; --active: #e4e4e8;
-  --line: #e6e6ea; --line-strong: #d4d4da; --text: #151517; --muted: #6b6b73; --faint: #76767e;
-  --bubble: #f0f0f2; --user: #151517; --user-text: #fff; --btn: #efeff2; --btn-hover: #e4e4e8;
-  --primary: #151517; --primary-text: #fff; --ok: #16a36a; --bad: #d93636; --warn: #c77c02;
+  /* Warm paper whites, not inverted dark: page < sidebar < cards (white, lifted by shadow) */
+  --bg: #fbfbfa; --side: #f3f3f0; --panel: #ffffff; --card: #ffffff; --hover: #efefeb; --active: #e7e7e2;
+  --line: #e7e7e2; --line-strong: #d6d6cf; --text: #1b1b19; --muted: #5f5f5a; --faint: #6e6e69;
+  --bubble: #f3f3f0; --user: #1b1b19; --user-text: #fbfbfa; --btn: #f1f1ed; --btn-hover: #e7e7e2;
+  --primary: #1b1b19; --primary-text: #fff; --ok: #12895a; --bad: #c92a2a; --warn: #b26a00;
+  --accent: #2459d6;
   color-scheme: light;
 }
 * { box-sizing: border-box; }
@@ -781,6 +783,15 @@ body.reordering .side-sub, body.reordering .side-section, body.reordering .side-
 .th-crumb { margin-right: auto; }
 /* Bot browser pane */
 .br-bar { display: flex; align-items: center; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.br-tabs { display: flex; align-items: center; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: thin; }
+.br-tabs[hidden] { display: none; }
+.br-tab { display: flex; align-items: center; flex: 0 1 200px; min-width: 0; border: 1px solid var(--line); border-radius: 8px; }
+.br-tab.on { background: var(--hover); }
+.br-tab button { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 5px 8px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.br-tab > button:first-child { flex: 1; text-align: left; }
+.br-tab-x { flex: none; display: grid; place-items: center; padding: 4px 6px !important; opacity: .6; }
+.br-tab-x svg { width: 14px; height: 14px; }
+.br-tab-new { flex: none; border: 1px solid var(--line); border-radius: 8px; background: none; color: inherit; cursor: pointer; padding: 3px 9px; font: inherit; }
 .br-url { flex: 1; min-width: 0; height: 32px; border-radius: 16px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--text); padding: 0 14px; font-size: 13px; }
 .br-body { overflow: hidden; display: flex; align-items: flex-start; justify-content: center; background: #1e1e1e; }
 .br-body .br-screen { width: 100%; height: 100%; max-height: none; object-fit: fill; margin: 0; cursor: default; outline: none; }
@@ -1249,7 +1260,7 @@ body.code-dragging .codepane, body.code-dragging .panes { transition: none !impo
 .home-ask { display: flex; gap: 8px; margin-bottom: 22px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 6px; }
 .home-ask select { background: var(--btn); color: var(--text); border: 0; border-radius: 10px; padding: 0 10px; font: inherit; max-width: 200px; }
 .home-ask input { flex: 1; min-width: 0; background: none; border: 0; color: var(--text); font: inherit; font-size: 15px; padding: 8px; outline: none; }
-.home-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+.home-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: 14px; }
 .home-card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 14px 14px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .home-card.wide { grid-column: 1 / -1; }
 .home-card.urgent { border-color: var(--warn, #e0a030); }
@@ -1913,11 +1924,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline-offs
 /* ---------- UX best practices 2026-11-17 ---------- */
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 /* Loading placeholders in the shape of content, instead of "Loading…" */
-.skel { display: flex; flex-direction: column; gap: 10px; padding: 6px 4px 10px; }
-.skel i { display: block; height: 12px; border-radius: 6px; background: linear-gradient(90deg, var(--hover) 25%, var(--active) 50%, var(--hover) 75%); background-size: 200% 100%; animation: skel 1.3s ease-in-out infinite; }
-.skel i:nth-child(1) { width: 70%; } .skel i:nth-child(2) { width: 90%; } .skel i:nth-child(3) { width: 45%; }
+.skel3 { display: flex; flex-direction: column; gap: 10px; padding: 6px 4px 10px; }
+.skel3 i { display: block; height: 12px; border-radius: 6px; background: linear-gradient(90deg, var(--hover) 25%, var(--active) 50%, var(--hover) 75%); background-size: 200% 100%; animation: skel 1.3s ease-in-out infinite; }
+.skel3 i:nth-child(1) { width: 70%; } .skel3 i:nth-child(2) { width: 90%; } .skel3 i:nth-child(3) { width: 45%; }
 @keyframes skel { from { background-position: 100% 0; } to { background-position: -100% 0; } }
-@media (prefers-reduced-motion: reduce) { .skel i { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .skel3 i { animation: none; } }
 /* In-app confirm */
 .confirm-scrim { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(0,0,0,.5); }
 .confirm-box { width: min(400px, calc(100vw - 32px)); padding: 18px; }
@@ -1929,3 +1940,27 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline-offs
 .send-err span { flex: 1; min-width: 0; }
 /* The thread arrow shows when focused by keyboard too */
 .side-caret:focus-visible { opacity: 1 !important; outline: 2px solid var(--accent); }
+
+/* Bot widgets in the side panel (widgets.js) */
+.wg-body { display: flex; flex-direction: column; gap: 10px; padding: 0 12px 12px; }
+.wg-h { margin: 8px 2px 0; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.wg { border: 1px solid var(--line); border-radius: 14px; background: var(--card); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.wg.wg-proposed { border-style: dashed; }
+.wg-top { display: flex; align-items: center; gap: 8px; }
+.wg-top b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wg-top small { font-size: 11px; }
+.wg-x { padding: 2px; }
+.wg-src { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.wg-acts { display: flex; gap: 8px; }
+.wg-acts .btn { flex: 1; }
+.wg-stat { font-size: 28px; font-weight: 700; letter-spacing: -.02em; line-height: 1.1; }
+.wg-unit { font-size: 14px; font-weight: 500; color: var(--muted); }
+.wg-bar { height: 6px; border-radius: 4px; background: var(--hover); overflow: hidden; }
+.wg-bar i { display: block; height: 100%; background: var(--ok); }
+.wg-list { list-style: none; margin: 0; padding: 0; }
+.wg-list li { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.wg-list li:first-child { border-top: 0; }
+.wg-list li.done span { text-decoration: line-through; color: var(--muted); }
+.wg-list em { font-style: normal; color: var(--muted); white-space: nowrap; }
+.wg-err { color: var(--bad); font-size: 13px; overflow-wrap: anywhere; }
+.wg-empty { margin: 6px 2px; font-size: 13px; }

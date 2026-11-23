@@ -10,6 +10,7 @@ import { initCodeIde, renderTestRun, fileMatches } from './codeide.js';
 import { initAiTools, autoApprovePage, dreamPage, skillsPage, connectorsPage, memoryButton, cameraModal, voiceMode } from './aitools.js';
 import { initDocEditor, DOC, closeDoc, docsModal, openDoc, reloadDoc } from './docedit.js';
 import { activityLogModal, appearanceModal, botPluginsModal, ccPluginsModal, claudeModal, computerModal, decide, languageModal, marketModal, mfaModal, rejectModal, serverModal } from './panels.js';
+import { initWidgets, openWidgets } from './widgets.js';
 import { initHomelab, backupsPage, ipMapPage, journalPage, logsPage, routingPage, mapPage, officePage, officeHandoff, PLAN_TAG, planButton, approvePlan } from './homelab.js';
 import { initAutomation, watchdogPage, playbooksPage, chainsPage, factsPage, budgetsPage, laterModal, saveAsPlaybook, postMortemPrompt, digestCard } from './automation.js';
 import { startRecording, stopRecording, cancelRecording, isRecording, browserDictation } from './dictation.js';
@@ -160,7 +161,7 @@ function trapTab(e, box) {
   else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
   else if (!box.contains(document.activeElement)) { e.preventDefault(); f[0].focus(); }
 }
-const SKEL = '<div class="skel" role="status" aria-label="Loading"><i></i><i></i><i></i></div>';
+const SKEL = '<div class="skel3" role="status" aria-label="Loading"><i></i><i></i><i></i></div>';
 
 // A light tap on phones (Android browsers and the Nimbus app); ignored elsewhere.
 const buzz = (ms = 8) => { try { if (matchMedia('(pointer: coarse)').matches) navigator.vibrate?.(ms); } catch {} };
@@ -200,6 +201,7 @@ const sideOpen = JSON.parse(localStorage.sideOpen || '{}'); // bot id / 'p<id>' 
 const saveSideOpen = () => { localStorage.sideOpen = JSON.stringify(sideOpen); };
 initAutomation({ S, api, esc, modal, closeModal: (...a) => closeModal(...a), toast, bot, avatar, ICON, openSettings: (k, r) => openSettings(k, r) });
 initHomelab({ S, api, esc, modal, closeModal: (...a) => closeModal(...a), toast, bot, avatar, ICON, openThread: (k) => openThread(k) });
+initWidgets({ api, esc, toast, bot, ICON });
 initCodeIde({ S, api, esc, modal, closeModal: (...a) => closeModal(...a), toast, bot, avatar, ICON, openThread: (k) => openThread(k), threadKey: () => threadKey(), refreshState: () => refreshState() });
 initAiTools({ S, api, esc, modal, closeModal: (...a) => closeModal(...a), toast, bot, avatar, ICON, openThread: (k) => openThread(k), threadKey: () => threadKey(), addFiles: (f) => addFiles(f) });
 initPages({ S, api, esc, modal, closeModal, toast, bot, avatar, ICON, openThread, refreshState: () => refreshState(), stamp, threadName, botOfThread: (k) => { const m = /^bot:(\d+)$/.exec(k || ''); return m ? Number(m[1]) : threadOf(k)?.bot_id ?? null; }, kbHint: (a) => { if (a === 'palette') return 'Ctrl+K'; const c = kbGet(a); return c ? kbLabel(c) : ''; } });
@@ -532,8 +534,8 @@ function renderSide() {
           ${it.bot ? `<span class="side-caret ${sideIsOpen(it.bot.id) ? 'open' : ''}" data-expand="${it.bot.id}" role="button" tabindex="0" aria-expanded="${sideIsOpen(it.bot.id)}" aria-label="Show ${esc(it.bot.name)}’s threads">${TI.chev}</span>` : ''}
         </button>${it.bot && !sideQuery && sideIsOpen(it.bot.id) ? sideTree(it.bot, key) : ''}`).join('') + (g ? '</div>' : '')).join('') + (sideQuery ? '' : codeSidebar(key) + sharedProjects(key)) + (sideQuery ? '' : d.sideOrder ? '<button class="side-reset" data-act="side-recent">↺ Sort by recent activity</button>'
           : items.length > 1 ? '<div class="side-hint">Tip: drag chats to arrange them</div>' : '')
-        : sideQuery ? '<div class="side-empty">No chats match</div>'
-        : `<div class="side-empty">No bots yet.<br><button class="link" data-act="market">Browse Connectors</button> or <button class="link" data-act="new-bot">make one</button>.</div>`}
+        : sideQuery ? `<div class="side-empty">${cloudArt('sad')}No chats match</div>`
+        : `<div class="side-empty">${cloudArt('calm')}No bots yet.<br><button class="link" data-act="market">Browse Connectors</button> or <button class="link" data-act="new-bot">make one</button>.</div>`}
     </div>
     ${sideQuery.length >= 2 ? `<div class="side-hits" id="side-hits"><div class="side-empty">Searching messages…</div></div>` : ''}
     <div class="side-foot">
@@ -915,13 +917,31 @@ async function loadProxmox() {
   drawProxmox(pveLast);
 }
 // Home: every Proxmox CT and VM as a tile with an up/down light. Clicking one opens Proxmox Manager.
+// Host health: CPU and memory now, with a sparkline of the last ~30 minutes (kept in this browser only).
+function pveHealth(nodes) {
+  let hist = {}; try { hist = JSON.parse(sessionStorage.pveHist || '{}'); } catch {}
+  const now = Date.now();
+  for (const n of nodes) {
+    const h = hist[n.name] ||= [], last = h[h.length - 1];
+    if (n.status !== 'online') { h.length = 0; continue; } // offline: no stale line
+    if (!last || now - last.t > 25000) h.push({ t: now, c: Math.round((n.cpu || 0) * 100), m: n.maxmem ? Math.round((n.mem / n.maxmem) * 100) : 0 });
+    if (h.length > 60) h.splice(0, h.length - 60);
+  }
+  sessionStorage.pveHist = JSON.stringify(hist);
+  const spark = (vals) => { if (vals.length < 2) return '<svg class="spark" viewBox="0 0 100 24"></svg>';
+    const pts = vals.map((v, i) => `${(i / (vals.length - 1)) * 100},${22 - (v / 100) * 20}`).join(' ');
+    return `<svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" vector-effect="non-scaling-stroke"/></svg>`; };
+  const stat = (label, v, vals) => vals.length ? `<div class="hs-stat ${v >= 90 ? 'bad' : v >= 75 ? 'warm' : ''}"><small>${label}</small><b>${v}%</b>${spark(vals)}</div>` : `<div class="hs-stat"><small>${label}</small><b>—</b>${spark([])}</div>`;
+  return nodes.length ? `<div class="health-strip">${nodes.map((n) => { const h = hist[n.name] || [], cur = h[h.length - 1] || { c: 0, m: 0 };
+    return `<div class="hs-node"><span class="hs-name"><i class="dot ${n.status === 'online' ? 'on' : 'off'}"></i>${esc(n.name)}<small>${n.status === 'online' ? `up ${Math.floor((n.uptime || 0) / 86400)}d` : esc(n.status)}</small></span>${stat('CPU', cur.c, h.map((x) => x.c))}${stat('Memory', cur.m, h.map((x) => x.m))}</div>`; }).join('')}</div>` : '';
+}
 function pveHomeHtml(p) {
   const pm = S.data.bots.find((b) => /proxmox/i.test(b.name));
   const g = p?.guests || [], up = g.filter((x) => x.status === 'running').length;
   const head = `<h3>Proxmox${p && !p.error ? ` <span class="pve-sum ${up < g.length ? 'bad' : ''}">${up} of ${g.length} up</span>` : ''}</h3>`;
   if (!p) return head + `<div class="muted">${LOADER} Checking…</div>`;
   if (p.error) return head + `<div class="muted">Couldn’t reach Proxmox: ${esc(p.error)}</div>`;
-  return head + `<div class="pve-grid">${g.map((x) => `<button class="pve-tile ${x.status === 'running' ? 'up' : 'down'}" ${pm ? `data-open="bot:${pm.id}"` : ''} title="${x.type === 'qemu' ? 'VM' : 'CT'} ${x.id} on ${esc(x.node)}: ${esc(x.status)}"><i></i><span><b>${esc(x.name || '')}</b><small>${x.type === 'qemu' ? 'VM' : 'CT'} ${x.id} · ${x.status === 'running' ? 'up' : esc(x.status)}</small></span></button>`).join('')}</div>`;
+  return head + pveHealth(p.nodes || []) + `<div class="pve-grid">${g.map((x) => `<button class="pve-tile ${x.status === 'running' ? 'up' : 'down'}" ${pm ? `data-open="bot:${pm.id}"` : ''} title="${x.type === 'qemu' ? 'VM' : 'CT'} ${x.id} on ${esc(x.node)}: ${esc(x.status)}"><i></i><span><b>${esc(x.name || '')}</b><small>${x.type === 'qemu' ? 'VM' : 'CT'} ${x.id} · ${x.status === 'running' ? 'up' : esc(x.status)}</small></span></button>`).join('')}</div>`;
 }
 setInterval(() => { if (S.home && !S.current && S.data?.proxmox && !document.hidden) loadProxmox(); }, 30000);
 function drawProxmox(p) {
@@ -1016,7 +1036,7 @@ function renderMain() {
         <button type="button" class="plus" data-act="camera" aria-label="Camera" title="Take a photo and attach it">${ICON.camera}</button>
         <input type="file" id="file-pick" multiple hidden>
         <label for="msg" class="sr">Message</label>
-        <textarea id="msg" rows="1" placeholder="${isBot ? `Message ${esc(b.name)}${codeProject(threadKey())?.p.members.length > 1 ? ' · @ a bot to hand it work' : ''}` : `Message ${esc(r.name)} · @ a bot to direct it`}"></textarea>
+        <textarea id="msg" rows="1" placeholder="${isBot ? `Message ${esc(b.name)}${codeProject(threadKey()) ? ' · @ any bot to hand it work' : ''}` : `Message ${esc(r.name)} · @ a bot to direct it`}"></textarea>
         <button class="send" aria-label="Send">${ICON.send}</button>
       </form>
     </div>`}`;
@@ -1030,7 +1050,7 @@ function renderMain() {
         <button class="icon-btn" data-act="files" title="Files in this chat" aria-label="Files">${ICON.folder}</button>
         <button class="icon-btn" data-act="panel" title="Activity" aria-label="Activity">${ICON.bell}${pending ? `<i class="count hot">${pending}</i>` : ''}</button>
         ${BT_BTNS}</div>`;
-    const ta = $('#msg'); if (ta) ta.placeholder = `Ask ${b.name} anything${cm.p.members.length > 1 ? ' · @ a bot to hand it work' : ''}`;
+    const ta = $('#msg'); if (ta) ta.placeholder = `Ask ${b.name} anything · @ any bot to hand it work`;
   }
   if (!$('#msg')) { const th = $('#thread'); th.scrollTop = th.scrollHeight; return; }
   attachAutocorrect($('#msg'));
@@ -1231,9 +1251,9 @@ function slashMove(d) {
 }
 // @ in a group chat or Nimbus Code thread: pick a bot to hand the message to.
 function mentionBots() {
-  if (CM.draft) return (projectOf(CM.draft.project)?.members || []).map(bot).filter(Boolean);
+  if (CM.draft) return S.data.bots;
   if (S.current?.type === 'room') return (room(S.current.id)?.members || []).map(bot).filter(Boolean);
-  const c = codeProject(threadKey()); return c ? c.p.members.map(bot).filter(Boolean) : [];
+  return codeProject(threadKey()) ? S.data.bots : [];
 }
 function mentionHint(ta) {
   const m = ta.value.slice(0, ta.selectionStart).match(/(?:^|\s)@([\w./-]*)$/);
@@ -1808,6 +1828,7 @@ function revealWords(el) {
   const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: (n) => n.parentElement.closest('pre, .codeblk') || !n.textContent.trim() ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
   const nodes = []; for (let n; (n = walk.nextNode());) nodes.push(n);
   const total = nodes.reduce((k, n) => k + n.textContent.split(/\s+/).length, 0), step = Math.min(28, 1100 / Math.max(1, total));
+  el.classList.add('typing'); setTimeout(() => el.classList.remove('typing'), Math.min(1100, total * step) + 450); // caret while words appear
   let i = 0;
   for (const n of nodes) {
     const f = document.createDocumentFragment();
@@ -2289,6 +2310,7 @@ document.addEventListener('click', async (e) => {
   if (act) closePopover();
   if (act?.startsWith('home-pick:')) { localStorage.homeBot = act.slice(10); const hbIn = $('#home-bot'); if (hbIn) { hbIn.value = act.slice(10); renderMain(); $('#home-q')?.focus(); } return; }
   switch (act) {
+    case 'side-slim': return toggleSlim();
     case 'home-bots': e.stopPropagation(); return popover(t, S.data.bots.map((b) => ['home-pick:' + b.id, esc(b.name), avatar(b, 20)]));
     case 'new-menu': e.stopPropagation(); return popover(t, [...(cur ? [['new-thread', `New thread with ${esc(cur.name)}`, TI.chat]] : []), ['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['new-side-group', 'New sidebar group', ICON.folder], ['new-shared-project', 'New shared project', ICON.folder], ['new-code-project', 'New Nimbus Code project', CODE_ICON], ['market', 'Browse Connectors', ICON.grid]]);
     case 'more-menu': {
@@ -2296,7 +2318,7 @@ document.addEventListener('click', async (e) => {
       const nR = S.data.routines.filter((r) => r.bot_id === cur.id).length, nA = artNew[threadKey()] || 0;
       const comp = cur.computer && S.data.computers;
       return popover(t, [['voice', 'Voice chat', ICON.voice], ['routines', `Routines${nR ? ` (${nR})` : ''}`, ICON.clock],
-        comp ? ['computer', 'Computer', ICON.monitor] : ['browser', 'Browser', ICON.globe],
+        comp ? ['computer', 'Computer', ICON.monitor] : ['browser', 'Browser', ICON.globe], ['widgets', 'Widgets', ICON.grid],
         ['plugins', `Plugins${cur.plugins.length ? ` (${cur.plugins.length})` : ''}`, ICON.plug], ['memory', 'Memory', ICON.book],
         ['artifacts', `Artifacts${nA ? ` (${nA} new)` : ''}`, ICON.grid], ['pane-menu', 'Split pane', ICON.split], ['edit-bot', 'Bot settings', ICON.gear],
         // On phones Files and Chat details live here instead of the header, so the bot's name fits.
@@ -2395,6 +2417,7 @@ document.addEventListener('click', async (e) => {
     case 'shortcuts': return EMBED ? paneCmd('shortcuts') : shortcutsModal();
     case 'panel': e.stopPropagation(); $('#side').classList.remove('open'); closeInfo(); return $('#aside').classList.toggle('open');
     case 'browser': return BR.bot === S.current.id ? closeDoc() : openBrowser(S.current.id);
+    case 'widgets': closeDoc(); closeInfo(); $('#aside').classList.remove('open'); return openWidgets(S.current.id);
     case 'info': e.stopPropagation(); return infoBot === cur?.id && $('#info').classList.contains('open') ? closeInfo() : cur && openInfo(cur);
     case 'logout': await api('/api/logout', { method: 'POST' }); location.href = '/login'; return;
     case 'notify':
@@ -2787,6 +2810,7 @@ function openBrowser(botId, host = null) {
       <button type="button" class="icon-btn" data-br="reload" aria-label="Reload">${ICON.reload}</button>
       <input class="br-url" name="url" placeholder="Search or enter address" aria-label="Search or enter address" autocomplete="off" spellcheck="false">
     </form>
+    <div class="br-tabs" data-br-tabs role="tablist" aria-label="Open tabs"></div>
     <div class="viewer-body br-body"><img class="br-screen" alt="Live view of the bot’s browser" tabindex="0" hidden><div class="viewer-wait br-wait">Starting the browser…</div></div>
     ${b?.plugins?.includes('browser') ? '' : `<div class="br-note">${ICON.plug} Turn on the <b>Browser</b> plugin for ${esc(b?.name || 'this bot')} so it can use this browser too.</div>`}`;
   BR.bot = botId; BR.fitted = false;
@@ -2801,15 +2825,31 @@ function openBrowser(botId, host = null) {
     if (BR.es !== es) return;
     const ev = JSON.parse(e.data);
     if (ev.type === 'info' && !BR.fitted) { BR.fitted = true; fit(); }
-    if (ev.type === 'frame') { img.src = 'data:image/jpeg;base64,' + ev.data; BR.w = ev.w; BR.h = ev.h; img.hidden = false; $('.br-wait', el)?.remove(); }
+    if (ev.type === 'tabs') renderBrTabs(el, ev.tabs);
+    else if (ev.type === 'frame') { img.src = 'data:image/jpeg;base64,' + ev.data; BR.w = ev.w; BR.h = ev.h; img.hidden = false; $('.br-wait', el)?.remove(); }
     else if (ev.type === 'info') { if (document.activeElement !== url) url.value = ev.url === 'about:blank' ? '' : ev.url; $('[data-br-title]', el).textContent = ev.title && ev.url !== 'about:blank' ? ev.title : `${b?.name || 'Bot'}’s browser`; }
     else if (ev.type === 'error' || ev.type === 'closed') { es.close(); const w = $('.br-wait', el) || $('.br-body', el).appendChild(Object.assign(document.createElement('div'), { className: 'viewer-wait br-wait' })); w.textContent = ev.error || 'The browser closed.'; }
   };
 }
+// Tab strip: one chip per open page; the active one is highlighted. Clicks go to the bot's browser.
+function renderBrTabs(el, tabs) {
+  const box = $('[data-br-tabs]', el); if (!box) return;
+  box.hidden = tabs.length < 2;
+  box.innerHTML = tabs.map((t) => `<div class="br-tab${t.active ? ' on' : ''}" role="presentation">
+      <button type="button" role="tab" aria-selected="${t.active}" data-br-tab="${esc(t.id)}" title="${esc(t.url)}">${esc(t.title)}</button>
+      <button type="button" class="br-tab-x" data-br-close="${esc(t.id)}" aria-label="Close tab">${ICON.close}</button></div>`).join('')
+    + `<button type="button" class="br-tab-new" data-br-new aria-label="New tab" title="New tab">+</button>`;
+}
+const brTab = (body) => BR.bot && api(`/api/bots/${BR.bot}/browser/tabs`, { method: 'POST', body }).catch((e) => toast(e.message));
 const brSend = (body) => BR.bot && api(`/api/bots/${BR.bot}/browser`, { method: 'POST', body }).catch((e) => toast(e.message));
 // Pane coordinates → page coordinates.
 function brPoint(e, img) { const r = img.getBoundingClientRect(); return { x: Math.round((e.clientX - r.left) * BR.w / r.width), y: Math.round((e.clientY - r.top) * BR.h / r.height) }; }
 document.addEventListener('click', (e) => {
+  const tab = e.target.closest('[data-br-tab],[data-br-close],[data-br-new]');
+  if (tab) {
+    const d = tab.dataset;
+    return brTab(d.brNew !== undefined ? { action: 'new' } : d.brClose !== undefined ? { action: 'close', id: d.brClose } : { action: 'select', id: d.brTab });
+  }
   const a = e.target.closest('[data-br]');
   if (a) return a.dataset.br === 'close' ? closeDoc() : brSend({ action: a.dataset.br });
 
@@ -3140,6 +3180,7 @@ function renderHome() {
     <div class="thread home"><div class="home-inner">
       <h1 class="home-hi">${greeting()}${first ? ', ' + esc(first) : ''}.</h1>
       <p class="home-sub">${working.length ? `${working.length} bot${working.length === 1 ? ' is' : 's are'} working` : 'All your bots are idle'}${d.approvals.length ? ` · <b>${d.approvals.length} waiting for you</b>` : ''}${unread.length ? ` · ${unread.length} unread` : ''}.</p>
+      <div class="bot-strip" role="list" aria-label="Your bots">${d.bots.map((b) => `<button role="listitem" class="bs-bot ${b.status.state}" data-open="bot:${b.id}" title="${esc(b.name)}: ${esc(b.status.state === 'idle' ? 'idle' : b.status.label || b.status.state)}">${avatar(b, 34)}<span>${esc(b.name.replace(/ (Manager|Assistant)$/, ''))}</span></button>`).join('')}</div>
       <form class="home-ask" id="home-ask" autocomplete="off">
         <input type="hidden" id="home-bot" value="${hb ? hb.id : ''}">
         <button type="button" class="home-pickbot" data-act="home-bots" aria-label="Choose a bot">${hb ? avatar(hb, 24) + `<span>${esc(hb.name)}</span>` : 'Bot'} ${ICON.chevron}</button>
@@ -3148,14 +3189,14 @@ function renderHome() {
       </form>
       <div class="home-grid">
         ${d.approvals.length ? card(`${ICON.lock} Needs you`, d.approvals.map((a) => row(a.thread, avatar(bot(a.bot_id), 30), esc(bot(a.bot_id)?.name || 'Bot'), esc(describeTool(a.tool, a.input)), `<span class="muted">${timeAgo(a.created_at)}</span>`)).join(''), 'urgent') : ''}
-        ${quiet ? `<p class="home-quiet wide"><span class="dot"></span>All quiet: no one working, nothing unread, no routines yet today${d.upNext.length ? ` · next: ${whenNext(d.upNext[0].next)} · ${esc(bot(d.upNext[0].bot_id)?.name || '')}` : ''}.</p>` : ''}
+        ${quiet ? `<p class="home-quiet wide">${cloudArt('sleep')}<span>All quiet: no one working, nothing unread, no routines yet today${d.upNext.length ? ` · next: ${whenNext(d.upNext[0].next)} · ${esc(bot(d.upNext[0].bot_id)?.name || '')}` : ''}.</span></p>` : ''}
         <section class="home-card wide" id="home-digest"><h3>Since yesterday</h3>${SKEL}</section>
         ${d.proxmox ? `<section class="home-card wide" id="home-pve">${pveHomeHtml(pveLast)}</section>` : ''}
         ${working.length ? card('Working now', working.map((b) => row('bot:' + b.id, avatar(b, 30), esc(b.name), esc(b.status.label || 'Working…'), '<span class="dot working"></span>')).join('')) : ''}
         ${unread.length ? card('Unread', unread.map((it) => row(it.key, it.av, esc(it.name), esc(it.last.text), `<span class="muted">${stamp(it.last.at)}</span>`)).join('')) : ''}
         ${quiet ? '' : card('Routines today', (ranToday.length ? ranToday.map((r) => row('bot:' + r.bot_id, avatar(bot(r.bot_id), 30), esc(bot(r.bot_id)?.name || 'Bot'), esc(r.prompt.slice(0, 80)), `<span class="muted">ran ${clock(r.last_run)}</span>`)).join('') : '<div class="muted">Nothing has run yet today.</div>')
           + (d.upNext.length ? `<div class="home-next">Next: ${d.upNext.slice(0, 3).map((r) => `<span>${whenNext(r.next)} · ${esc(bot(r.bot_id)?.name || '')}</span>`).join('')}</div>` : ''))}
-        ${card('Recent chats', recent.map((it) => row(it.key, it.av, esc(it.name), esc((it.last.author === 'user' ? 'You: ' : '') + it.last.text), `<span class="muted">${stamp(it.last.at)}</span>`)).join('') || '<div class="muted">No chats yet.</div>', 'wide')}
+        ${card('Today', recent.map((it) => row(it.key, it.av, esc(it.name), esc((it.last.author === 'user' ? 'You: ' : '') + it.last.text), `<span class="muted">${stamp(it.last.at)}</span>`)).join('') || `<div class="empty-art">${cloudArt('calm')}<b>No chats yet</b><span>Ask a bot something above to get started.</span></div>`, 'wide timeline')}
       </div>
     </div></div>`;
 }
@@ -3166,6 +3207,20 @@ async function homeAsk() {
   catch (e) { toast(e.message, { type: 'bad', action: 'Retry', onAction: homeAsk, ms: 10000 }); }
 }
 document.addEventListener('submit', (e) => { if (e.target.id === 'home-ask') { e.preventDefault(); homeAsk(); } });
+
+// ---------- Slim sidebar: avatars only (Ctrl+\\), remembered per device ----------
+function toggleSlim(on = !document.body.classList.contains('side-slim')) { document.body.classList.toggle('side-slim', on); localStorage.sideSlim = on ? '1' : ''; }
+if (localStorage.sideSlim) document.body.classList.add('side-slim');
+document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === '\\') { e.preventDefault(); toggleSlim(); } });
+
+// ---------- Empty states: small Nimbus cloud drawings, one per mood ----------
+function cloudArt(mood = 'calm') {
+  const face = { calm: '<path d="M50 50q4 3 8 0" /><circle cx="46" cy="44" r="1.6"/><circle cx="62" cy="44" r="1.6"/>',
+    sleep: '<path d="M43 45h6M59 45h6"/><path d="M51 52q3 2 6 0"/><text x="74" y="26" font-size="9">z</text><text x="80" y="18" font-size="7">z</text>',
+    sad: '<circle cx="46" cy="44" r="1.6"/><circle cx="62" cy="44" r="1.6"/><path d="M50 54q4-3 8 0"/><path d="M40 70l-2 6M54 72l-2 6M68 70l-2 6" class="rain"/>' }[mood] || '';
+  return `<svg class="cloud-art ${mood}" viewBox="0 0 108 80" width="108" height="80" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <path class="cl-body" d="M30 62h48a16 16 0 0 0 2-31.9A22 22 0 0 0 38 26a18 18 0 0 0-8 36z"/><g class="cl-face" fill="currentColor" stroke-width="2">${face}</g></svg>`;
+}
 
 // ---------- Ctrl+K: jump anywhere ----------
 function paletteItems() {
@@ -3178,21 +3233,31 @@ function paletteItems() {
     ['memory', `${cur.name}’s memory`, 'Action', ICON.book], ['plugins', `${cur.name}’s plugins`, 'Action', ICON.plug], ['edit-bot', `${cur.name} settings`, 'Action', ICON.gear], ['voice', `Voice chat with ${cur.name}`, 'Action', ICON.voice]);
   out.push(['new-bot', 'New bot', 'Action', ICON.plus], ['new-room', 'New group chat', 'Action', ICON.plus], ['docs', 'Documents', 'Open', ICON.book], ['map', 'Homelab map', 'Open', ICON.monitor], ['office', 'Bot office', 'Open', ICON.home], ['set:backups', 'Backups', 'Open', ICON.box], ['set:autoapprove', 'Auto-approve', 'Open', ICON.check], ['set:skills', 'Skills', 'Open', ICON.box], ['set:connectors', 'Custom connectors (MCP)', 'Open', ICON.plug], ['set:dream', 'Self-review', 'Open', ICON.book], ['voice-mode', 'Voice mode', 'Action', ICON.wave], ['set:ipmap', 'IP map', 'Open', ICON.globe], ['set:logs', 'Search logs', 'Open', ICON.search], ['set:journal', 'Change journal', 'Open', ICON.clock],
     ['appearance', 'Appearance and themes', 'Settings', ICON.gear], ['server', 'Server settings', 'Settings', ICON.monitor], ['log', 'Activity log', 'Open', ICON.clock],
-    ['market', 'Connectors', 'Open', ICON.grid], ['cc-plugins', 'Plugins & skills', 'Open', ICON.plug], ['shortcuts', 'Keyboard shortcuts', 'Help', ICON.keyboard], ['panel', 'Approvals and activity', 'Open', ICON.bell]);
+    ['market', 'Connectors', 'Open', ICON.grid], ['cc-plugins', 'Plugins & skills', 'Open', ICON.plug], ['shortcuts', 'Keyboard shortcuts', 'Help', ICON.keyboard], ['panel', 'Approvals and activity', 'Open', ICON.bell], ['side-slim', document.body.classList.contains('side-slim') ? 'Full sidebar' : 'Slim sidebar (icons only)', 'Action', ICON.sidebar]);
   return out;
 }
 function openPalette() {
   if (document.querySelector('.palette')) return;
   modal(`<div class="palette"><label class="search pal-search">${ICON.search}<input id="pal-q" placeholder="Jump to a bot, thread or action…" autocomplete="off"></label><div class="pal-list" id="pal-list"></div>
     <div class="pal-hint">↑↓ to move · Enter to open · Esc to close · type 2+ letters to also search messages</div></div>`, { cls: 'pal-modal' });
-  const items = paletteItems(); let sel = 0, shown = items, hits = [], seq = 0;
+  const base = paletteItems(), seen = new Set(base.map((i) => i[0]));
+  for (const [g, list] of SET_NAV) for (const [k, l, ic] of list) if (!seen.has('set:' + k)) base.push(['set:' + k, l, 'Settings · ' + g, ic]);
+  const recentActs = (() => { try { return JSON.parse(localStorage.palRecent || '[]'); } catch { return []; } })();
+  const recent = recentActs.map((a) => base.find((i) => i[0] === a)).filter(Boolean).map((i) => [i[0], i[1], 'Recent', i[3]]);
+  const items = [...recent, ...base.filter((i) => !recentActs.includes(i[0]))];
+  let sel = 0, shown = items, hits = [], seq = 0;
+  const KEYS = { 'side-slim': 'Ctrl \\' }; // only shortcuts that exist
+  const group = (kind) => kind === 'Recent' ? 'Recent' : /^Bot|Group chat/.test(kind) ? 'Chats' : /^Thread/.test(kind) ? 'Threads' : /^Message/.test(kind) ? 'Messages' : /^Settings|^Open/.test(kind) ? 'Settings and tools' : 'Actions';
   const draw = () => {
     const all = [...shown.slice(0, 40), ...hits];
     sel = Math.max(0, Math.min(sel, all.length - 1));
-    $('#pal-list').innerHTML = all.length ? all.map(([act, label, kind, icon], i) => `<button class="pal-item ${i === sel ? 'sel' : ''}" data-pal="${esc(act)}">${icon || ''}<span class="pal-label">${esc(label)}</span><small>${esc(kind)}</small></button>`).join('') : '<div class="muted pal-empty">Nothing matches</div>';
+    let last = '';
+    $('#pal-list').innerHTML = all.length ? all.map(([act, label, kind, icon], i) => { const g = group(kind), head = g !== last ? `<div class="pal-sec">${g}</div>` : ''; last = g;
+      return `${head}<button class="pal-item ${i === sel ? 'sel' : ''}" data-pal="${esc(act)}">${icon || ''}<span class="pal-label">${esc(label)}</span><small>${esc(kind === 'Recent' ? '' : kind)}</small>${KEYS[act] ? `<kbd>${KEYS[act]}</kbd>` : ''}</button>`; }).join('') : '<div class="muted pal-empty">Nothing matches</div>';
     $('#pal-list .sel')?.scrollIntoView({ block: 'nearest' });
   };
   const run = (act) => {
+    localStorage.palRecent = JSON.stringify([act, ...recentActs.filter((a) => a !== act)].slice(0, 5));
     closeModal();
     if (act.startsWith('open:')) return openThread(act.slice(5));
     if (act.startsWith('set:')) return openSettings(act.slice(4));
@@ -3201,8 +3266,10 @@ function openPalette() {
   const q = $('#pal-q');
   q.addEventListener('input', async () => {
     const v = q.value.trim().toLowerCase(), words = v.split(/\s+/).filter(Boolean);
-    shown = !v ? items : items.map((it) => [it, it[1].toLowerCase()]).filter(([, l]) => words.every((w) => l.includes(w)))
-      .sort((a, b) => (b[1].startsWith(words[0]) - a[1].startsWith(words[0]))).map(([it]) => it);
+    // Fuzzy: every word matches as a substring, or its letters in order (e.g. "nmgr" -> Nimbus Manager).
+    const fz = (l, w) => { if (l.includes(w)) return 2; let j = 0; for (const ch of l) if (ch === w[j]) j++; return j === w.length ? 1 : 0; };
+    shown = !v ? items : base.map((it) => [it, it[1].toLowerCase()]).map(([it, l]) => [it, words.reduce((sc, w) => sc && fz(l, w) ? sc + fz(l, w) : 0, 1) + (l.startsWith(words[0]) ? 3 : 0)])
+      .filter(([, sc]) => sc > 0).sort((a, b) => b[1] - a[1]).map(([it]) => it);
     hits = []; sel = 0; draw();
     if (v.length >= 2) { const my = ++seq; try { const r = await api('/api/search?q=' + encodeURIComponent(v)); if (my !== seq) return;
       hits = r.results.slice(0, 8).map((m) => ['open:' + m.thread, m.snippet, `Message · ${m.author === 'user' ? 'You' : bot(Number(m.author))?.name || ''}`, ICON.search]); draw(); } catch {} }
@@ -3275,4 +3342,71 @@ function openSettings(key = (['hmap', 'office'].includes(localStorage.setKey) ? 
 }
 
 // Shared with the feature modules (docedit.js, ...).
+// ---------- Phone gestures: swipe a sheet down to close, pull Home to refresh, swipe a thread left to archive ----------
+(() => {
+  let g = null;
+  document.addEventListener('touchstart', (e) => {
+    const t = e.touches[0], sheet = e.target.closest('#modal-root .scrim > .modal:not(.sticky)'), home = e.target.closest('.thread.home'), row = e.target.closest('.side-sub-item[data-open^="t:"]');
+    if (sheet && innerWidth <= 760 && (sheet.scrollTop <= 0 || t.clientY - sheet.getBoundingClientRect().top < 40)) g = { kind: 'sheet', el: sheet, x: t.clientX, y: t.clientY };
+    else if (home && home.scrollTop <= 0) g = { kind: 'pull', el: home, x: t.clientX, y: t.clientY };
+    else if (row && matchMedia('(pointer: coarse)').matches) g = { kind: 'row', el: row, x: t.clientX, y: t.clientY };
+    else g = null;
+  }, { passive: true });
+  document.addEventListener('touchmove', (e) => {
+    if (!g) return;
+    const t = e.touches[0], dx = t.clientX - g.x, dy = t.clientY - g.y;
+    if (g.locked === undefined && Math.abs(dx) + Math.abs(dy) > 8) g.locked = g.kind === 'row' ? Math.abs(dx) > Math.abs(dy) * 1.5 && dx < 0 : dy > 0 && Math.abs(dy) > Math.abs(dx);
+    if (!g.locked) return;
+    g.d = g.kind === 'row' ? Math.min(0, dx) : Math.max(0, dy);
+    if (g.kind === 'sheet') { g.el.style.transition = 'none'; g.el.style.transform = `translateY(${g.d}px)`; }
+    if (g.kind === 'row') { g.el.style.transition = 'none'; g.el.style.transform = `translateX(${Math.max(-120, g.d)}px)`; g.el.classList.toggle('swipe-arm', g.d < -80); }
+    if (g.kind === 'pull') { let ind = $('#ptr'); if (!ind) { ind = document.createElement('div'); ind.id = 'ptr'; ind.innerHTML = LOADER; g.el.prepend(ind); } ind.style.height = Math.min(64, g.d / 2) + 'px'; ind.classList.toggle('arm', g.d > 120); }
+  }, { passive: true });
+  document.addEventListener('touchend', async () => {
+    if (!g?.locked) { g = null; return; }
+    const { kind, el, d = 0 } = g; g = null;
+    el.style.transition = ''; el.style.transform = '';
+    if (kind === 'sheet' && d > 110) { buzz(8); closeModal(true); }
+    if (kind === 'row') { el.classList.remove('swipe-arm'); if (d < -80) {
+      const id = el.dataset.open.slice(2); buzz(10);
+      try { await api(`/api/threads/${id}`, { method: 'PATCH', body: { archived: true } }); await refreshState();
+        toast('Thread archived', { action: 'Undo', onAction: async () => { await api(`/api/threads/${id}`, { method: 'PATCH', body: { archived: false } }); refreshState(); } }); } catch (err) { toast(err.message); }
+    } }
+    if (kind === 'pull') { const ind = $('#ptr'); if (d > 120) { buzz(8); pveAt = 0; try { await refreshState(); } catch {} } ind?.remove(); }
+  });
+})();
+
+// Select text anywhere (not in inputs or editors) -> floating "Search Google" chip.
+(() => {
+  let chip = null;
+  const hide = () => { chip?.remove(); chip = null; };
+  const show = () => {
+    const sel = getSelection(), q = String(sel || '').trim();
+    if (!q || q.length > 300 || !sel.rangeCount) return hide();
+    const n = sel.anchorNode?.parentElement;
+    if (!n || n.closest('input, textarea, [contenteditable="true"], .sel-search')) return hide();
+    const r = sel.getRangeAt(0).getBoundingClientRect();
+    if (!r.width && !r.height) return hide();
+    if (!chip) {
+      chip = document.createElement('button');
+      chip.className = 'sel-search'; chip.type = 'button';
+      chip.innerHTML = `${ICON.search}<span>Search Google</span>`;
+      chip.addEventListener('mousedown', e => e.preventDefault());
+      chip.addEventListener('click', () => {
+        const t = String(getSelection() || '').trim();
+        if (t) window.open('https://www.google.com/search?q=' + encodeURIComponent(t), '_blank', 'noopener');
+        hide();
+      });
+      document.body.appendChild(chip);
+    }
+    const top = r.top > 44 ? r.top - 38 : r.bottom + 8;
+    chip.style.top = Math.round(top) + 'px';
+    chip.style.left = Math.round(Math.max(8, Math.min(innerWidth - 160, r.left + r.width / 2 - 70))) + 'px';
+  };
+  let t;
+  document.addEventListener('selectionchange', () => { clearTimeout(t); t = setTimeout(show, 250); });
+  addEventListener('scroll', hide, true);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') hide(); });
+})();
+
 export { $, ART, SKEL, askConfirm, ED, ICON, JUST, S, V, api, applyTheme, avatar, bot, buzz, clip, closeInfo, closeModal, connect, copyText, describeTool, download, esc, fmtSize, getPrefs, md, modal, openThread, refreshState, renderMain, stamp, stopBrowserView, stopEditor, svg, timeAgo, toast, userName };

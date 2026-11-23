@@ -154,6 +154,10 @@ async function main() {
     await req('PUT', '/api/settings', { pve_token_secret: 'abc-secret' });
     eq((await req('GET', '/api/settings')).json.pve_token_secret, '__saved__');
   });
+  await test('widgets: list is empty for a bot with none', async () => { const r = await req('GET', '/api/widgets?bot=1'); eq(r.status, 200); eq(r.json.widgets.length, 0); });
+  await test('widgets: pinning a missing widget is a 404', async () => eq((await req('POST', '/api/widgets/999/pin', {})).status, 404));
+  await test('widgets: bots must be in a run to propose one', async () => eq((await req('POST', '/api/hook/widgets', { runId: 1, action: 'list' }, { 'x-nimbus-hook': HOOK })).status, 400));
+  await test('widgets: the bot hook needs the hook token', async () => eq((await req('POST', '/api/hook/widgets', { runId: 1, action: 'list' })).status, 403));
   await test('sign out ends the session', async () => {
     await req('POST', '/api/logout', {}); eq((await req('GET', '/api/state')).status, 401);
   });

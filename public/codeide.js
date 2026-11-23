@@ -198,7 +198,7 @@ async function anotherModal(k) {
   const c = X.S.data.threads.find((t) => 't:' + t.id === k), p = X.S.data.projects.find((x) => x.id === c?.project_id);
   const el = X.modal(`<div class="modal-head"><h2>Try another way</h2><button class="icon-btn" data-close aria-label="Close">${X.ICON.close}</button></div>
     <p class="muted">Starts a new chat on its own branch with this chat’s first message, so you can compare two attempts and keep the better one. This doubles the Claude usage for the task.</p>
-    <label class="field">Bot for the second attempt<select id="c2-ab">${(p?.members || []).map((id) => X.bot(id)).filter(Boolean).map((b) => `<option value="${b.id}" ${b.id === c?.bot_id ? 'selected' : ''}>${X.esc(b.name)}${b.model ? ` (${X.esc(b.model)})` : ''}</option>`).join('')}</select></label>
+    <label class="field">Bot for the second attempt<select id="c2-ab">${X.S.data.bots.map((b) => `<option value="${b.id}" ${b.id === c?.bot_id ? 'selected' : ''}>${X.esc(b.name)}${b.model ? ` (${X.esc(b.model)})` : ''}</option>`).join('')}</select></label>
     <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="c2-ago">Start second attempt</button></div>`);
   el.addEventListener('click', async (e) => {
     if (e.target.closest('[data-close]')) return X.closeModal();

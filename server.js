@@ -17,20 +17,21 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import * as Docs from './docs.js';
 import { UPLOADS, MAX_UPLOAD, safeName, uploadPath, readUpload, saveUpload, addVersion, registerFiles, deleteUploads } from './files.js';
 import { claudeEnv, claudeStatus, setClaudeToken, TOKEN_RE } from './claudeauth.js';
-import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport, cancelQueued, editQueued, threadLimit, projectBots } from './runner.js';
+import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport, cancelQueued, editQueued, threadLimit, allBots } from './runner.js';
 import * as TH from './threads.js';
 import * as Code from './code.js';
 import { createGate, rememberRule } from './gate.js';
 import { registerSpeech } from './speech.js';
 import { botCommands } from './slash.js';
 import { loadTools, approveTool, runTool, SCAN_PROMPT } from './apitools.js';
-import { ensureBrowser, watchBrowser, browserInput, closeBrowser } from './browser.js';
+import { ensureBrowser, watchBrowser, browserInput, closeBrowser, listTabs, tabAction } from './browser.js';
 import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
 import { startScheduler, nextRun, isValidCron } from './scheduler.js';
 import { getPlanUsage, getModels } from './planusage.js';
 import { registerPages } from './pages.js';
 import { registerAutomation, startAutomation, moods } from './automation.js';
 import { registerHomelab, startHomelab, journalBefore, planAllows } from './homelab.js';
+import { registerWidgets } from './widgets.js';
 import { registerAiTools, startAiTools, autoApprove } from './aitools.js';
 import { registerCodeIde, PROBE } from './codeide.js';
 import { pluginCatalog, setPlugin } from './ccplugins.js';
@@ -135,7 +136,7 @@ function postToThread(thread, text, files = [], voice = null) {
     if (notes?.length) { toolNotes.delete(thread); text = `(Before this message, the user ran your API tools in Nimbus. What they saw:\n${notes.join('\n\n').slice(-6000)}\n)\n\n` + text; }
     // Nimbus Code: "@Name do this" sends it to that bot in the project (each bot keeps its own conversation here).
     const code = Code.threadCode(thread);
-    const targets = code ? findMentions(text, projectBots(code.p.id)) : [];
+    const targets = code ? findMentions(text, allBots()) : [];
     if (targets.length) for (const b of targets) runBot({ botId: b.id, thread, prompt: text, msgId: b === targets[0] ? msg.id : null, msgText: msg.body, source: 'the user' });
     else runBot({ botId: TH.threadBot(thread), thread, prompt: text, msgId: msg.id, msgText: msg.body, voice });
   } else if (thread.startsWith('room:')) {
@@ -449,6 +450,7 @@ registerFiles(route, { json, body, broadcast, addNote: (thread, text, files) => 
 // Feature modules all get the same context and add their own routes.
 const featureCtx = { json, body, q, DATA_DIR, broadcast, postToThread, pveGet, pveConfig };
 for (const register of [registerSpeech, registerPages, registerAutomation, registerHomelab, registerAiTools, registerCodeIde]) register(route, featureCtx);
+registerWidgets(route, { json, body, hookAuth });
 
 // Restart the service once no bot is mid-run (a restart kills running bots, including one that asked for it).
 // Needs a sudoers rule letting this user run `systemctl restart nimbus`.
@@ -519,6 +521,7 @@ route('DELETE', '/api/bots/:id', (req, res, p) => {
   q('DELETE FROM bots WHERE id=?').run(p.id);
   q('DELETE FROM room_members WHERE bot_id=?').run(p.id);
   q('DELETE FROM routines WHERE bot_id=?').run(p.id);
+  q('DELETE FROM widgets WHERE bot_id=?').run(p.id);
   TH.removeBotThreads(p.id);
   broadcast('state_changed', {});
   json(res, 200, { ok: true });
@@ -774,6 +777,16 @@ route('GET', '/api/bots/:id/browser/stream', async (req, res, p) => {
 route('POST', '/api/bots/:id/browser', async (req, res, p) => {
   if (!usableBot(req, p.id)) return json(res, 404, { error: 'No such bot' });
   try { const out = await browserInput(userBrowser(req, p.id), await body(req)); json(res, 200, { ok: true, ...(out?.text !== undefined ? { text: out.text } : {}) }); }
+  catch (e) { json(res, 400, { error: e.message }); }
+});
+// Tabs in the bot's browser: list, or { action: 'new'|'select'|'close', id, url }.
+route('GET', '/api/bots/:id/browser/tabs', async (req, res, p) => {
+  if (!usableBot(req, p.id)) return json(res, 404, { error: 'No such bot' });
+  json(res, 200, { tabs: await listTabs(userBrowser(req, p.id)) });
+});
+route('POST', '/api/bots/:id/browser/tabs', async (req, res, p) => {
+  if (!usableBot(req, p.id)) return json(res, 404, { error: 'No such bot' });
+  try { await tabAction(userBrowser(req, p.id), await body(req)); json(res, 200, { ok: true, tabs: await listTabs(userBrowser(req, p.id)) }); }
   catch (e) { json(res, 400, { error: e.message }); }
 });
 route('DELETE', '/api/bots/:id/browser', (req, res, p) => {
@@ -1285,7 +1298,7 @@ route('GET', '/api/hook/approval/:id', (req, res, p) => {
 });
 
 // ---------- server ----------
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.mjs': 'text/javascript', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.webp': 'image/webp' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.mjs': 'text/javascript', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.webp': 'image/webp', '.woff2': 'font/woff2' };
 
 // ---------- login ----------
 // The app is meant to be reachable from the internet, so some login method is required:
@@ -1343,7 +1356,7 @@ function newSessionCookie(req, email = '') {
 }
 // The app's pages may run only Nimbus's own script files: injected <script> tags, onclick="…" and eval are refused,
 // so a slip in escaping can't become code. Bot web pages load from ?sandbox URLs with their own rules (see /api/files).
-const APP_CSP = ["default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com", "font-src 'self' data: https://fonts.gstatic.com",
+const APP_CSP = ["default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "font-src 'self' data:",
   "img-src 'self' data: blob: https:", "media-src 'self' data: blob:", "connect-src 'self' ws: wss:", "frame-src 'self' blob: data: http: https:", "worker-src 'self' blob:",
   "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'self'"].join('; ');
 const LOGIN_PAGE = fs.readFileSync(path.join(PUBLIC, 'login.html'));
@@ -1512,7 +1525,7 @@ function adminAuth(req) {
     && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && !req.headers['x-forwarded-for'];
 }
 
-const OPEN_PATHS = new Set(['/nimbus.webp', '/login', '/api/login', '/api/login/mfa', '/api/signup', '/api/auth-methods', '/icon.svg', '/status', '/icon-32.png', '/icon-180.png', '/icon-192.png', '/icon-512.png', '/manifest.webmanifest', '/styles.css']);
+const OPEN_PATHS = new Set(['/nimbus.webp', '/login', '/api/login', '/api/login/mfa', '/api/signup', '/api/auth-methods', '/icon.svg', '/status', '/icon-32.png', '/icon-180.png', '/icon-192.png', '/icon-512.png', '/manifest.webmanifest', '/styles.css', '/design.css', '/fonts/InterVariable.woff2', '/fonts/JetBrainsMono-Regular.woff2', '/fonts/JetBrainsMono-Medium.woff2']);
 function checkAuth(req, res, url) {
   if (url.pathname.startsWith('/api/hook/') || OPEN_PATHS.has(url.pathname) || adminAuth(req) || loggedIn(req)) {
     // Mutating API calls must be JSON: blocks form-based cross-site requests.

@@ -79,9 +79,9 @@ export const browserRunning = (botId) => browsers.has(String(botId));
 
 // ---------- live view ----------
 // The pane follows the tab most recently brought to front (Chrome lists pages by recency).
-async function attach(botId, nb) {
+async function attach(botId, nb, preferId) {
   const pages = (await cdpJson(nb.port, '/json/list')).filter((t) => t.type === 'page');
-  const target = pages[0] || await cdpJson(nb.port, '/json/new?about:blank', 'PUT');
+  const target = pages.find((t) => t.id === preferId) || pages[0] || await cdpJson(nb.port, '/json/new?about:blank', 'PUT');
   if (nb.page?.id === target.id) return;
   nb.page?.ws.close();
   const ws = new WebSocket(target.webSocketDebuggerUrl);
@@ -118,6 +118,35 @@ async function applyView(nb) {
   await s('Page.startScreencast', { format: 'jpeg', quality: 75, maxWidth: Math.round(w * dpr), maxHeight: Math.round(h * dpr), everyNthFrame: 1 });
 }
 function publishInfo(nb) { for (const v of nb.viewers) v({ type: 'info', ...nb.info }); }
+// Sends the tab list when it changes (ids, titles or the active tab).
+async function publishTabs(nb, pages) {
+  try { pages ??= (await cdpJson(nb.port, '/json/list')).filter((t) => t.type === 'page'); } catch { return; }
+  const tabs = tabsOf(nb, pages), sig = JSON.stringify(tabs);
+  if (sig === nb.tabSig) return;
+  nb.tabSig = sig;
+  for (const v of nb.viewers) v({ type: 'tabs', tabs });
+}
+
+// Tabs: every page in the bot's browser, most recently used first. The pane shows the first one.
+const tabsOf = (nb, pages) => pages.map((t) => ({ id: t.id, title: t.title || t.url || 'New tab', url: t.url, active: t.id === nb.page?.id }));
+export async function listTabs(botId) {
+  const nb = browsers.get(String(botId)); if (!nb) return [];
+  return tabsOf(nb, (await cdpJson(nb.port, '/json/list')).filter((t) => t.type === 'page'));
+}
+// { action: 'new', url? } | { action: 'select', id } | { action: 'close', id }. A URL or search in "new" works like the address bar.
+export async function tabAction(botId, a) {
+  botId = String(botId);
+  await ensureBrowser(botId);
+  const nb = browsers.get(botId); nb.used = Date.now();
+  const http = (p, method = 'GET') => fetch(`http://127.0.0.1:${nb.port}${p}`, { method, signal: AbortSignal.timeout(3000) }).then((r) => r.text());
+  if (a.action === 'new') {
+    const t = JSON.parse(await http(`/json/new?${toUrl(a.url || 'about:blank')}`, 'PUT'));
+    return attach(botId, nb, t.id);
+  }
+  if (a.action === 'select') { await http(`/json/activate/${encodeURIComponent(a.id)}`); return attach(botId, nb, a.id); }
+  if (a.action === 'close') { await http(`/json/close/${encodeURIComponent(a.id)}`); return attach(botId, nb); }
+  throw new Error('Unknown tab action');
+}
 
 // Watch a bot's browser. send(event) gets {type:'frame'|'info'|'closed'|'error'}; returns an unsubscribe function.
 export async function watchBrowser(botId, send) {
@@ -128,11 +157,13 @@ export async function watchBrowser(botId, send) {
   await attach(botId, nb);
   if (nb.last) send(nb.last);
   send({ type: 'info', ...nb.info });
+  nb.tabSig = null; publishTabs(nb);
   // Follow new tabs and titles; screencasts only send frames when something changes.
   const timer = setInterval(async () => {
     try {
       const pages = (await cdpJson(nb.port, '/json/list')).filter((t) => t.type === 'page');
       if (pages[0] && pages[0].id !== nb.page?.id) await attach(botId, nb);
+      publishTabs(nb, pages);
       const cur = pages.find((p) => p.id === nb.page?.id);
       if (cur && (cur.title !== nb.info.title || cur.url !== nb.info.url)) { nb.info = { url: cur.url, title: cur.title }; publishInfo(nb); }
     } catch {}

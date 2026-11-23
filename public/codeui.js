@@ -75,20 +75,20 @@ export function newCodeThread(projectId) {
   const ps = codeProjects(); if (!ps.length) return codeProjectModal();
   const p = ps.find((x) => x.id === projectId) || ps.find((x) => x.id === CM.draft?.project) || ps.find((x) => x.id === codeProject(X.threadKey())?.p.id) || ps[0];
   closeCodePane(); setCodeMode(true);
-  CM.draft = { project: p.id, bot: p.members[0], own: true };
+  CM.draft = { project: p.id, bot: X.S.data.bots[0]?.id, own: true };
   X.S.current = null; history.replaceState(null, '', '#code');
   X.renderSide(); X.renderMain();
   document.getElementById('msg')?.focus();
 }
 export function codeDraftMain() {
   const d = CM.draft, ps = codeProjects(), p = ps.find((x) => x.id === d.project) || ps[0];
-  const bots = p.members.map(X.bot).filter(Boolean);
+  const bots = X.S.data.bots;
   if (!bots.some((b) => b.id === d.bot)) d.bot = bots[0]?.id;
   return `<header class="head"><button class="icon-btn menu-btn" data-act="menu" aria-label="Menu">${X.ICON.menu}</button><span class="cm-crumb"><i class="cm-badge">${X.esc(initials(p.name))}</i>${X.esc(p.name)} <span class="muted">/</span> <b>New thread</b></span></header>
-    <div class="thread"><div class="cm-hello"><h2>What should we build?</h2><p class="muted">${X.esc(p.name)} · ${bots.length ? X.esc(bots.map((b) => b.name).join(', ')) : 'no bots yet'}</p></div></div>
+    <div class="thread"><div class="cm-hello"><h2>What should we build?</h2><p class="muted">${X.esc(p.name)} · @ any bot to get help</p></div></div>
     <div class="composer cm-composer"><form id="composer">
       <label for="msg" class="sr">Message</label>
-      <textarea id="msg" rows="2" placeholder="Ask anything${bots.length > 1 ? ' · @ a bot to hand it work' : ''}"></textarea>
+      <textarea id="msg" rows="2" placeholder="Ask anything · @ any bot to hand it work"></textarea>
       <div class="cm-bar">
         <select id="cm-proj" title="Project">${ps.map((x) => `<option value="${x.id}" ${x.id === p.id ? 'selected' : ''}>${X.esc(x.name)}</option>`).join('')}</select>
         <select id="cm-bot" title="Bot">${bots.map((b) => `<option value="${b.id}" ${b.id === d.bot ? 'selected' : ''}>${X.esc(b.name)}</option>`).join('')}</select>
@@ -121,7 +121,6 @@ export { CODE_ICON };
 export async function codeProjectModal(p) {
   const isNew = !p;
   p = p || { name: '', instructions: '', members: [], test_cmd: '', preview_cmd: '' };
-  const members = new Set(p.members);
   let repos = { root: '~/code', repos: [] };
   if (isNew) try { repos = await X.api('/api/code/repos'); } catch {}
   const el = X.modal(`
@@ -134,8 +133,6 @@ export async function codeProjectModal(p) {
       <span class="hint" id="cp-where">Made in ${X.esc(repos.root)}/<b id="cp-slug">…</b></span></div>` : `<div class="field">Repo<div class="muted mono">${X.esc(p.repo)}</div></div>
       <div class="field">GitHub repo<div class="cp-newbot"><input id="cp-gh" placeholder="https://github.com/owner/repo"><button type="button" class="btn" id="cp-ghgo">Link</button></div>
       <span class="hint">An empty project takes the code from GitHub. One with work keeps it and just gets GitHub as its remote.</span></div>`}
-    <div class="field">Bots in this project<div id="cp-picks" class="picks"></div>
-      <div class="cp-newbot"><input id="cp-bn" placeholder="New bot name, e.g. Coder"><button type="button" class="btn" id="cp-bot">${X.ICON.plus} Make bot</button></div></div>
     <label class="field">Instructions (optional)<textarea id="cp-ins" rows="3" placeholder="Stack, rules, how to run it. Every bot here reads this.">${X.esc(p.instructions)}</textarea></label>
     <details class="field cp-adv"><summary>Tests and preview (found automatically)</summary>
       <label class="field">Test command<input id="cp-test" value="${X.esc(p.test_cmd || '')}" placeholder="npm test, pytest… (blank = detect)"></label>
@@ -152,8 +149,7 @@ export async function codeProjectModal(p) {
   let src = 'new';
   const slug = () => { const s = $('#cp-slug'); if (s) s.textContent = $('#cp-name').value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'project'; };
   const $ = (s) => el.querySelector(s);
-  const draw = () => { $('#cp-picks').innerHTML = X.S.data.bots.map((b) => `<label class="pick ${members.has(b.id) ? 'on' : ''}"><input type="checkbox" data-cpm="${b.id}" ${members.has(b.id) ? 'checked' : ''}>${X.avatar(b, 28)}<span>${X.esc(b.name)}</span></label>`).join(''); };
-  draw(); slug();
+  slug();
   if (!isNew) X.api(`/api/code2/project/${p.id}/settings`).then((st) => {
     $('#cp-setup').value = st.setup_cmd; $('#cp-lint').value = st.lint_cmd; $('#cp-autotest').checked = st.auto_test;
     if (st.env.length) $('#cp-envhint').innerHTML = `Saved: ${st.env.map((k) => `<code>${X.esc(k)}</code>`).join(' ')}. Add NAME=value lines to set or change; NAME= (empty) removes one. Values are never shown.`;
@@ -164,7 +160,6 @@ export async function codeProjectModal(p) {
     await X.api(`/api/code2/project/${pid}/settings`, { method: 'PUT', body: { setup_cmd: $('#cp-setup').value.trim(), lint_cmd: $('#cp-lint').value.trim(), auto_test: $('#cp-autotest').checked, env } });
   };
   $('#cp-name').addEventListener('input', slug);
-  el.addEventListener('change', (e) => { if (e.target.dataset.cpm) { const id = Number(e.target.dataset.cpm); e.target.checked ? members.add(id) : members.delete(id); draw(); } });
   el.addEventListener('click', async (e) => {
     if (e.target.closest('[data-close]')) return X.closeModal();
     const s = e.target.closest('[data-src]');
@@ -174,11 +169,6 @@ export async function codeProjectModal(p) {
       return;
     }
     try {
-      if (e.target.closest('#cp-bot')) {
-        const name = $('#cp-bn').value.trim(); if (!name) return X.toast('Type a name for the new bot');
-        const b = await X.api('/api/bots', { method: 'POST', body: { name, role: 'Writes and fixes code', instructions: 'You are a careful software engineer. Read the code before changing it, keep changes small and focused, match the existing style, and run the tests.', effort: 'high', color: X.BOT_COLORS[X.S.data.bots.length % X.BOT_COLORS.length], shape: 'none/specs', approval_rules: ['Bash(git push*)', 'Bash(rm -rf*)', 'Bash(*gh pr merge*)'] } });
-        await X.refreshState(); members.add(b.id); $('#cp-bn').value = ''; draw(); return X.toast(`${name} is ready`);
-      }
       if (e.target.id === 'cp-ghgo') {
         const btn = e.target; btn.disabled = true; btn.textContent = 'Linking…';
         try { const r = await X.api(`/api/projects/${p.id}/github`, { method: 'POST', body: { url: $('#cp-gh').value } }); X.toast(r.replaced ? `Linked. The project now has the code from GitHub (${r.branch}).` : `Linked to GitHub (${r.branch}).`); CP.gh = null; }
@@ -187,9 +177,8 @@ export async function codeProjectModal(p) {
       }
       if (e.target.id === 'cp-del') { if (await deleteCodeProject(p)) X.closeModal(); return; }
       if (e.target.id === 'cp-save') {
-        const body = { name: $('#cp-name').value.trim(), instructions: $('#cp-ins').value, members: [...members], testCmd: $('#cp-test').value.trim(), previewCmd: $('#cp-prev').value.trim() };
+        const body = { name: $('#cp-name').value.trim(), instructions: $('#cp-ins').value, members: [], testCmd: $('#cp-test').value.trim(), previewCmd: $('#cp-prev').value.trim() };
         if (!body.name) return X.toast('Give the project a name');
-        if (!body.members.length) return X.toast('Pick at least one bot (or make one)');
         const btn = e.target; btn.disabled = true; btn.textContent = src === 'clone' ? 'Cloning…' : 'Creating…';
         try {
           if (isNew) {

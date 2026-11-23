@@ -8,7 +8,8 @@ import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { q, parseBot, writeBotBrief, getSetting, ASK_BOT } from './db.js';
+import { q, parseBot, writeBotBrief, getSetting, ASK_BOT, botDir } from './db.js';
+import { installedSkills, matchSkills } from './skill-match.js';
 import { redact } from './redact.js';
 import { broadcast } from './events.js';
 import { PLUGINS } from './catalog.js';
@@ -181,6 +182,10 @@ function codeStep(tool, input = {}, cwd) {
 }
 export function projectBots(projectId) {
   return q('SELECT b.* FROM bots b JOIN project_members m ON m.bot_id=b.id WHERE m.project_id=?').all(Number(projectId)).map(parseBot);
+}
+// Every bot: a Nimbus Code thread can @mention any of them, not just the project's.
+export function allBots() {
+  return q('SELECT * FROM bots ORDER BY id').all().map(parseBot);
 }
 export function roomMembers(roomId) {
   return q('SELECT b.* FROM bots b JOIN room_members m ON m.bot_id=b.id WHERE m.room_id=? ORDER BY b.id').all(roomId).map(parseBot);
@@ -401,6 +406,11 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
       : null;
     // Thread and project context goes in once, when a conversation starts; resumed sessions already have it.
     if (!session && !isRoom && thread.startsWith('t:')) fullPrompt = threadContext(thread, botId) + fullPrompt;
+    // Nimbus points the bot at the installed skills that fit what the user just asked (local match, no extra Claude call).
+    if (isUserSource(source) && !isRoom && getSetting('skill_match') !== '0') {
+      const picks = matchSkills(prompt, installedSkills(path.join(botDir(botId), '.claude', 'skills')));
+      if (picks.length) fullPrompt = `(Skills that fit this message: ${picks.join(', ')}. Use them if they help.)\n` + fullPrompt;
+    }
 
     // "/compact": ask Claude Code to summarize this chat's history so it takes far less room (memory and
     // the gist are kept). Only chats with a running conversation have something to compact.
@@ -544,7 +554,7 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet, voice }) 
       if (ct) {
         Code.checkpointAfter(runId).then((ch) => { if (ch) addMessage(thread, botId, 'changes', ch, runId); Code.changedNow(thread); }).catch(() => {});
         if (msg.kind === 'text' && depth < MAX_HANDOFF_DEPTH) {
-          const members = projectBots(ct.p.id);
+          const members = allBots();
           for (const target of findMentions(reply, members, botId)) runBot({ botId: target.id, thread, prompt: `${bot.name} said: ${reply}`, depth: depth + 1, source: bot.name });
         }
       }

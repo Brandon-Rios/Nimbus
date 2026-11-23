@@ -159,7 +159,7 @@ export function threadContext(key, botId) {
   const p = q('SELECT * FROM projects WHERE id=?').get(t.project_id);
   if (!p) return '';
   const others = p.owner_bot_id == null ? projectMembers(p.id).filter((b) => b !== Number(botId)).map((b) => q('SELECT name FROM bots WHERE id=?').get(b)?.name).filter(Boolean) : [];
-  if (p.kind === 'code') return codeContext(key) + (others.length ? `(Other bots in this project: ${others.join(', ')}. @mention one by name to hand it work.)\n` : '') + (p.instructions.trim() ? `Project instructions:\n${p.instructions.trim()}\n` : '') + '\n';
+  if (p.kind === 'code') return codeContext(key) + '(Any Nimbus bot can help here: the user @mentions one by name to hand it work.)\n' + (p.instructions.trim() ? `Project instructions:\n${p.instructions.trim()}\n` : '') + '\n';
   return `(Project "${p.name}"${p.owner_bot_id == null ? ', shared' : ''}${t.title ? `, thread "${t.title}"` : ''}. Project files: ${projectFolder(p.id)}`
     + (others.length ? `. Other bots in it: ${others.join(', ')}` : '') + ')\n'
     + (p.instructions.trim() ? `Project instructions:\n${p.instructions.trim()}\n` : '') + '\n';

@@ -24,7 +24,7 @@ export function setConnected(up) {
   online = up;
   let bar = $('#conn-bar');
   if (!bar) { bar = document.createElement('div'); bar.id = 'conn-bar'; bar.setAttribute('role', 'status'); document.body.append(bar); }
-  if (!up) { downSince = Date.now(); bar.className = 'down'; bar.textContent = 'Reconnecting to Nimbus… messages you send are saved and go out when it’s back.'; return; }
+  if (!up) { downSince = Date.now(); bar.className = 'down'; bar.innerHTML = '<span class="cb-cloud" aria-hidden="true"></span>Reconnecting to Nimbus… messages you send are saved and go out when it’s back.'; return; }
   bar.className = 'up'; bar.textContent = 'Back online' + (OUT().length ? ' · sending saved messages…' : '');
   setTimeout(() => { if (online) bar.className = 'gone'; }, 2200);
   flushOutbox();

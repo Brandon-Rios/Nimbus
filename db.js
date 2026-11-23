@@ -127,6 +127,14 @@ function filesSection() {
 `;
 }
 // Kept to a few lines: it's in every bot's brief, so it's paid for on every new conversation.
+function widgetsSection() {
+  const w = path.resolve(path.dirname(new URL(import.meta.url).pathname), 'bin', 'widget.mjs');
+  return `
+## Side-panel widgets
+- Offer a small tracker or quick control when it helps (e.g. a shopping list, a count). Write its data to a .json file in your folder,
+  then propose it: node ${w} propose <spec.json> (spec and data format: node ${w} with no args). The user pins it; you can't.
+`;
+}
 function threadsSection() {
   const t = path.resolve(path.dirname(new URL(import.meta.url).pathname), 'bin', 'thread.mjs');
   return `
@@ -187,7 +195,7 @@ ${bot.instructions || '(none yet)'}
 - When the user tells you a preference or rule, add one line to MEMORY.md in this folder.
 - This folder is your workspace. Keep notes and files here.
 ${getSetting('reply_lang') ? `- Always reply to the user in ${getSetting('reply_lang')}, even if they write in another language (code, commands and file names stay as they are).\n` : ''}
-${remote ? '' : filesSection()}${remote ? '' : threadsSection()}
+${remote ? '' : filesSection()}${remote ? '' : threadsSection()}${remote ? '' : widgetsSection()}
 ## Your team
 ${teamSection(bot, remote)}
 ${homelabSection()}

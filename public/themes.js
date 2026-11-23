@@ -3,11 +3,11 @@
 // text muted faint bubble user userText btn btnHover primary primaryText, then accent.
 const V = ['bg', 'side', 'panel', 'card', 'hover', 'active', 'line', 'line-strong', 'text', 'muted', 'faint',
   'bubble', 'user', 'user-text', 'btn', 'btn-hover', 'primary', 'primary-text'];
-const t = (name, scheme, accent, colors, skin) => ({ name, scheme, accent, skin, vars: colors ? Object.fromEntries(colors.split(' ').map((c, i) => [V[i], c])) : null });
+const t = (name, scheme, accent, colors, skin, look) => ({ name, scheme, accent, skin, look, vars: colors ? Object.fromEntries(colors.split(' ').map((c, i) => [V[i], c])) : null });
 
 export const THEMES = {
   dark: t('Nimbus Dark', 'dark', '#3b82f6'),
-  light: t('Nimbus Light', 'light', '#3b82f6'),
+  light: t('Nimbus Light', 'light', '#2459d6'),
   midnight: t('Midnight', 'dark', '#7c9cff', '#0b1020 #10162b #141b34 #18203d #1c2547 #232d55 #222b4d #2f3a66 #e6e9f5 #8b93b8 #5b6390 #1a2242 #c9d4ff #0b1020 #1f2850 #283264 #c9d4ff #0b1020'),
   nord: t('Nord', 'dark', '#88c0d0', '#2e3440 #3b4252 #3b4252 #434c5e #434c5e #4c566a #434c5e #4c566a #eceff4 #a3abb9 #6b7385 #3b4252 #88c0d0 #2e3440 #434c5e #4c566a #88c0d0 #2e3440'),
   dracula: t('Dracula', 'dark', '#bd93f9', '#22212c #282a36 #2c2e3c #313342 #363848 #3f4256 #383a4c #4b4e66 #f8f8f2 #a4a7c1 #6f7394 #343746 #bd93f9 #22212c #383a4c #44475a #ff79c6 #22212c'),
@@ -21,6 +21,8 @@ export const THEMES = {
   solarizedLight: t('Solarized Light', 'light', '#1d6fa8', '#fdf6e3 #f5eedb #eee8d5 #fffbef #e9e2cf #e1d9c4 #e4ddc9 #d3cbb5 #073642 #586e75 #93a1a1 #eee8d5 #073642 #fdf6e3 #eee8d5 #e1d9c4 #073642 #fdf6e3'),
   sky: t('Sky', 'light', '#2563eb', '#f7faff #eef4fd #e9f0fb #ffffff #e1eafa #d6e2f7 #dbe5f5 #c4d4ee #0f1b33 #5a6b8a #93a2bd #e8effb #1d4ed8 #ffffff #e6eefb #d6e2f7 #1d4ed8 #ffffff'),
   blossom: t('Blossom', 'light', '#db2777', '#fff8fb #fdeef4 #fbe9f1 #ffffff #f8e0eb #f3d3e2 #f4dbe6 #e9c3d5 #2e1622 #82586c #b896a6 #fbe7f0 #9d174d #ffffff #f8e3ed #f3d3e2 #9d174d #ffffff'),
+  // Modern look on top of the normal design (glass.css, [data-look=glass]); not a retro skin.
+  glass: t('Liquid Glass', 'dark', '#5b8cff', '#000000 transparent rgba(255,255,255,.05) rgba(255,255,255,.05) rgba(255,255,255,.10) rgba(255,255,255,.14) rgba(255,255,255,.10) rgba(255,255,255,.18) #f2f2f4 #a6a6ad #85858c rgba(255,255,255,.07) rgba(255,255,255,.16) #ffffff rgba(255,255,255,.08) rgba(255,255,255,.14) #ffffff #000000', null, 'glass'),
   // Retro skins: a palette plus extra styling in styles.css ([data-skin=…]): bevels, title bars, fonts.
   win95: t('Windows 95', 'light', '#000080', '#008080 #c0c0c0 #c0c0c0 #ffffff #d4d0c8 #000080 #808080 #404040 #000000 #303030 #707070 #ffffff #000080 #ffffff #c0c0c0 #d4d0c8 #000080 #ffffff', 'win95'),
   xp: t('Windows XP', 'light', '#316ac5', '#ece9d8 #d6dff7 #ece9d8 #ffffff #c1d2ee #316ac5 #b5b2a2 #7f9db9 #000000 #444444 #808080 #ffffff #316ac5 #ffffff #f4f3ee #e3e2da #3c9a32 #ffffff', 'xp'),
@@ -47,8 +49,9 @@ export function resolveTheme(prefs, systemDark) {
 export function applyThemeVars(root, theme, accent) {
   root.dataset.theme = theme.scheme;
   if (theme.skin) root.dataset.skin = theme.skin; else delete root.dataset.skin;
+  if (theme.look) root.dataset.look = theme.look; else delete root.dataset.look;
   for (const k of V) root.style.removeProperty('--' + k);
   if (theme.vars) for (const [k, v] of Object.entries(theme.vars)) root.style.setProperty('--' + k, v);
   root.style.setProperty('--accent', accent || theme.accent);
-  return theme.vars?.side || (theme.scheme === 'dark' ? '#0e0e0f' : '#f6f6f7');
+  return (theme.look ? theme.vars?.bg : theme.vars?.side) || (theme.scheme === 'dark' ? '#0e0e0f' : '#f6f6f7');
 }
