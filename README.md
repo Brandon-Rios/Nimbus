@@ -22,20 +22,10 @@ background, and they stop and ask before anything risky.
 - AI tools: smart auto-approve (free rules, optional cheap check that explains why it asks), Rewind a chat,
   weekly self-review, a shared skills library, custom MCP connectors, voice mode and camera
 - Automation: watchdog for your services, playbooks, scheduled messages, hand-offs, team memory, per-bot budgets
-- Homelab tools: backups view, IP map, change journal (undo for file edits), plan-first mode, log search, model routing
+- Tools: change journal (undo for file edits), plan-first mode, model routing
 - Voice dictation transcribed on your own server (whisper.cpp), file and image attachments, bots that message each other
 
 No npm packages. Needs only **Node 22.13+** and **Claude Code**.
-
-## Proxmox VE (one line)
-
-In the Proxmox host shell, paste:
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Brandon-Rios/nimbus/main/proxmox/nimbus-lxc.sh)"
-```
-It asks a few questions (container ID, size, network, who may sign in), creates a Debian 13 LXC container (Debian 12 on older Proxmox),
-installs Nimbus in it as a dedicated `nimbus` user with a service that starts on boot, and prints the address.
-Then sign the bots in to Claude once: `pct enter <id>`, `su - nimbus -c claude`, `systemctl restart nimbus`.
 
 ## Quick install
 
@@ -141,9 +131,8 @@ journalctl -u nimbus -f      # logs
 
 ## Server settings
 
-**Server settings** in the user menu holds the bot-computer VM (agent URL, token, callback URL) and an
-optional Proxmox API token. Saved values override the matching env vars and apply without a restart.
-With Proxmox set, the Activity panel shows host load and any guests that aren't running.
+**Server settings** in the user menu holds the bot-computer VM (agent URL, token, callback URL).
+Saved values override the matching env vars and apply without a restart.
 
 ## Scripting Nimbus from the server
 
@@ -171,8 +160,7 @@ and wake on the next task; Server settings → Update computers rebuilds them wi
 
 Approvals: `@self-email` in a bot's Always-allow lets it email only you; time waiting for approval doesn't count toward the
 run limit. Routines can be quiet checks (only report problems) and are skipped when the plan's 5-hour limit is over 85%
-(`NIMBUS_ROUTINE_GUARD_PCT`). `data/shared/HOMELAB.md` is included in every bot's brief. Nightly encrypted backups:
-`bin/backup.mjs` (restore with `--restore`). Read-aloud uses Piper (`~/opt/piper`). `bin/team-status.mjs` summarizes the team.
+(`NIMBUS_ROUTINE_GUARD_PCT`). Read-aloud uses Piper (`~/opt/piper`). `bin/team-status.mjs` summarizes the team.
 
 Secrets that look like API keys, tokens or passwords are masked as `[REDACTED]` before chat
 messages, run logs and approvals are saved. The bot still receives your original message.

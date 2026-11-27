@@ -212,5 +212,5 @@ export async function digestCard() {
       : `<span></span><span>Nothing watched yet <button class="btn small" data-ex-open="watchdog">Set up Watchdog</button></span>`}
       <span class="dg-big">${total}</span><span>tasks run${d.runs[0] ? ` · busiest ${name(d.runs[0].bot_id)}` : ''}</span></div>
     ${lines.length ? `<ul class="dg-list">${lines.join('')}</ul>` : '<div class="muted">A quiet day: nothing broke, nothing waiting.</div>'}
-    <div class="dg-links">${link('data-ex-open="watchdog"', I.bell, 'Watchdog')}${link('data-ex-open="playbooks"', I.book, 'Playbooks')}${link('data-ex-open="backups"', I.box, 'Backups')}${link('data-act="map"', I.monitor, 'Homelab map')}${link('data-act="office"', I.home, 'Bot office')}<a class="btn small ghost" href="/status" target="_blank" rel="noopener">${I.globe}<span>Status page</span></a></div>`;
+    <div class="dg-links">${link('data-ex-open="watchdog"', I.bell, 'Watchdog')}${link('data-ex-open="playbooks"', I.book, 'Playbooks')}${link('data-act="map"', I.monitor, 'Homelab map')}${link('data-act="office"', I.home, 'Bot office')}<a class="btn small ghost" href="/status" target="_blank" rel="noopener">${I.globe}<span>Status page</span></a></div>`;
 }

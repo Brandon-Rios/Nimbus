@@ -1,4 +1,4 @@
-// API tools: quick commands a bot defines for the services it can reach (Proxmox, OPNsense, UniFi...).
+// API tools: quick commands a bot defines for the services it can reach (a router, a NAS, a web service...).
 // The bot writes them once into api-tools.json in its folder (/api-tools scan asks it to); after that
 // Nimbus runs them directly as slash commands: no Claude call, no plan usage, answers in a second.
 // Only the user can run them. A tool runs only after the user has seen and approved its exact script;
@@ -53,7 +53,7 @@ export function runTool(botId, name, args, redact) {
 // What /api-tools scan sends to the bot (one normal Claude run).
 export const SCAN_PROMPT = `Set up your API tools for Nimbus. Look at what services and APIs you can reach (tokens, config and scripts in your folder, your instructions and memory). Then write ${FILE} in your folder (overwrite it) with quick read-mostly commands the user will run often, like this:
 {"tools": [
-  {"name": "guests", "desc": "List VMs and containers with status", "run": "curl -sk -H \\"Authorization: PVEAPIToken=$(cat .pve-token)\\" https://host:8006/api2/json/cluster/resources | jq -r '.data[] | ...'"},
+  {"name": "disk", "desc": "Show disk usage", "run": "df -h"},
   {"name": "start", "args": "<vmid>", "desc": "Start a VM", "run": "...$1...", "changes": true}
 ]}
 Rules: 3 to 10 tools. name is lowercase letters, digits, - or _. "run" is a bash command run in your folder; words the user types after the command are $1, $2 (all of them: $ARGS). Read secrets from files in your folder; never put a secret in the JSON itself. Format output for a human (short tables or lines, use jq or python3), and keep it under a screenful. Mark anything that changes something (start, stop, reboot, block, delete) with "changes": true. Test each read-only command once before saving. Reply with the list of tools you made (name and one line each).`;

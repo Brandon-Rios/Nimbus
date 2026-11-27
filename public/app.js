@@ -11,7 +11,7 @@ import { initAiTools, autoApprovePage, dreamPage, skillsPage, connectorsPage, me
 import { initDocEditor, DOC, closeDoc, docsModal, openDoc, reloadDoc } from './docedit.js';
 import { activityLogModal, appearanceModal, botPluginsModal, ccPluginsModal, claudeModal, computerModal, decide, languageModal, marketModal, mfaModal, rejectModal, serverModal } from './panels.js';
 import { initWidgets, openWidgets } from './widgets.js';
-import { initHomelab, backupsPage, ipMapPage, journalPage, logsPage, routingPage, mapPage, officePage, officeHandoff, PLAN_TAG, planButton, approvePlan } from './homelab.js';
+import { initHomelab, journalPage, routingPage, officePage, officeHandoff, PLAN_TAG, planButton, approvePlan } from './homelab.js';
 import { initAutomation, watchdogPage, playbooksPage, chainsPage, factsPage, budgetsPage, laterModal, saveAsPlaybook, postMortemPrompt, digestCard } from './automation.js';
 import { startRecording, stopRecording, cancelRecording, isRecording, browserDictation } from './dictation.js';
 const $ = (s, el = document) => el.querySelector(s);
@@ -841,7 +841,6 @@ function renderAside() {
         : '<div class="muted">When you tell a bot a rule, it shows up here.</div>'}
     </section>
     ${d.computers ? `<section data-af-sec="sys" id="comp-box"><h4>Bot computers</h4>${SKEL}</section>` : ''}
-    ${d.proxmox ? `<section data-af-sec="sys" id="pve-box"><h4>Proxmox</h4>${SKEL}</section>` : ''}
     ${d.usage.byBot?.length ? `<section><h4>Usage by bot · 7 days</h4>${(() => { const total = d.usage.byBot.reduce((a, x) => a + x.cost, 0) || 1;
       return d.usage.byBot.slice(0, 6).map((x) => { const b = bot(x.bot_id); const pc = Math.round((x.cost / total) * 100);
         return `<div class="ubot">${avatar(b, 20)}<span class="un">${esc(b?.name || 'Deleted bot')}</span><span class="muted">${x.runs} runs · ${b ? esc(EFFORTS.find((e) => e[0] === b.effort)?.[1] || b.effort) : ''}</span><b>${pc}%</b></div>
@@ -849,7 +848,6 @@ function renderAside() {
       <div class="muted small">Heavy bots on High or Max effort usually do fine on Medium for routine work.</div></section>` : ''}
     <section class="usage" id="usage-box">${usageFallback(d, pct)}</section>`;
   loadPlanUsage();
-  if (d.proxmox) loadProxmox();
   if (d.computers) loadComputers();
 }
 
@@ -907,55 +905,6 @@ function drawComputers(c) {
     ${c.sleepAfterMin ? `<div class="muted small">Idle computers sleep after ${c.sleepAfterMin >= 60 ? c.sleepAfterMin / 60 + ' h' : c.sleepAfterMin + ' min'}.</div>` : ''}`;
 }
 
-// Host load and guest status, fetched separately so a slow Proxmox never delays the app.
-let pveLast = null, pveAt = 0;
-async function loadProxmox() {
-  if (pveLast) drawProxmox(pveLast);
-  if (Date.now() - pveAt < 15000) return;
-  pveAt = Date.now();
-  try { pveLast = await api('/api/proxmox'); } catch (err) { pveLast = { error: err.message }; }
-  drawProxmox(pveLast);
-}
-// Home: every Proxmox CT and VM as a tile with an up/down light. Clicking one opens Proxmox Manager.
-// Host health: CPU and memory now, with a sparkline of the last ~30 minutes (kept in this browser only).
-function pveHealth(nodes) {
-  let hist = {}; try { hist = JSON.parse(sessionStorage.pveHist || '{}'); } catch {}
-  const now = Date.now();
-  for (const n of nodes) {
-    const h = hist[n.name] ||= [], last = h[h.length - 1];
-    if (n.status !== 'online') { h.length = 0; continue; } // offline: no stale line
-    if (!last || now - last.t > 25000) h.push({ t: now, c: Math.round((n.cpu || 0) * 100), m: n.maxmem ? Math.round((n.mem / n.maxmem) * 100) : 0 });
-    if (h.length > 60) h.splice(0, h.length - 60);
-  }
-  sessionStorage.pveHist = JSON.stringify(hist);
-  const spark = (vals) => { if (vals.length < 2) return '<svg class="spark" viewBox="0 0 100 24"></svg>';
-    const pts = vals.map((v, i) => `${(i / (vals.length - 1)) * 100},${22 - (v / 100) * 20}`).join(' ');
-    return `<svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" vector-effect="non-scaling-stroke"/></svg>`; };
-  const stat = (label, v, vals) => vals.length ? `<div class="hs-stat ${v >= 90 ? 'bad' : v >= 75 ? 'warm' : ''}"><small>${label}</small><b>${v}%</b>${spark(vals)}</div>` : `<div class="hs-stat"><small>${label}</small><b>—</b>${spark([])}</div>`;
-  return nodes.length ? `<div class="health-strip">${nodes.map((n) => { const h = hist[n.name] || [], cur = h[h.length - 1] || { c: 0, m: 0 };
-    return `<div class="hs-node"><span class="hs-name"><i class="dot ${n.status === 'online' ? 'on' : 'off'}"></i>${esc(n.name)}<small>${n.status === 'online' ? `up ${Math.floor((n.uptime || 0) / 86400)}d` : esc(n.status)}</small></span>${stat('CPU', cur.c, h.map((x) => x.c))}${stat('Memory', cur.m, h.map((x) => x.m))}</div>`; }).join('')}</div>` : '';
-}
-function pveHomeHtml(p) {
-  const pm = S.data.bots.find((b) => /proxmox/i.test(b.name));
-  const g = p?.guests || [], up = g.filter((x) => x.status === 'running').length;
-  const head = `<h3>Proxmox${p && !p.error ? ` <span class="pve-sum ${up < g.length ? 'bad' : ''}">${up} of ${g.length} up</span>` : ''}</h3>`;
-  if (!p) return head + `<div class="muted">${LOADER} Checking…</div>`;
-  if (p.error) return head + `<div class="muted">Couldn’t reach Proxmox: ${esc(p.error)}</div>`;
-  return head + pveHealth(p.nodes || []) + `<div class="pve-grid">${g.map((x) => `<button class="pve-tile ${x.status === 'running' ? 'up' : 'down'}" ${pm ? `data-open="bot:${pm.id}"` : ''} title="${x.type === 'qemu' ? 'VM' : 'CT'} ${x.id} on ${esc(x.node)}: ${esc(x.status)}"><i></i><span><b>${esc(x.name || '')}</b><small>${x.type === 'qemu' ? 'VM' : 'CT'} ${x.id} · ${x.status === 'running' ? 'up' : esc(x.status)}</small></span></button>`).join('')}</div>`;
-}
-setInterval(() => { if (S.home && !S.current && S.data?.proxmox && !document.hidden) loadProxmox(); }, 30000);
-function drawProxmox(p) {
-  const hb = $('#home-pve'); if (hb) hb.innerHTML = pveHomeHtml(p);
-  const box = $('#pve-box'); if (!box) return;
-  const pc = (a, b) => (b ? Math.round((a / b) * 100) : 0);
-  const meter = (label, v) => `<div class="row"><span>${label}</span><span>${v}%</span></div><div class="meter"><div style="width:${v}%"></div></div>`;
-  const down = (p.guests || []).filter((g) => g.status !== 'running');
-  box.innerHTML = `<h4>Proxmox</h4>${p.error ? `<div class="muted">Couldn’t reach Proxmox: ${esc(p.error)}</div>`
-    : (p.nodes || []).map((n) => `<div class="pve-node"><b>${esc(n.name)}</b> <span class="muted">${n.status === 'online' ? `up ${Math.floor(n.uptime / 86400)}d` : esc(n.status)}</span>
-        ${meter('CPU', Math.round(n.cpu * 100))}${meter('Memory', pc(n.mem, n.maxmem))}${meter('Root disk', pc(n.disk, n.maxdisk))}</div>`).join('')
-      + `<div class="muted">${(p.guests || []).length - down.length} of ${(p.guests || []).length} guests running</div>`
-      + down.map((g) => `<div class="sched"><span>${esc(g.status)}</span><span>${g.id} · ${esc(g.name)}</span></div>`).join('')}`;
-}
 function describeTool(tool, input = {}) {
   if (tool === 'Bash') return 'Run: ' + String(input.command || '').slice(0, 80);
   const pretty = tool.replace(/^mcp__/, '').replace(/__/g, ' › ').replace(/_/g, ' ');
@@ -975,7 +924,7 @@ function renderMain() {
   if (!S.current && S.home && !EMBED) {
     // Live updates redraw Home; keep what you were typing (and which bot) in the quick-ask box.
     const q = $('#home-q'), keep = q && { v: q.value, f: document.activeElement === q, s: q.selectionStart, bot: $('#home-bot')?.value };
-    main.innerHTML = renderHome(); digestCard(); if (S.data.proxmox) loadProxmox();
+    main.innerHTML = renderHome(); digestCard();
     if (keep) { const n = $('#home-q'); n.value = keep.v; $('#home-bot').value = keep.bot; if (keep.f) { n.focus(); n.setSelectionRange(keep.s, keep.s); } }
     return;
   }
@@ -2337,7 +2286,6 @@ document.addEventListener('click', async (e) => {
     case 'home-ask': return homeAsk();
     case 'claude': return openSettings('claude'); // one settings place: opens as a section of Settings
     case 'docs': return docsModal();
-    case 'map': return mapPage();
     case 'office': return officePage();
     case 'plan-toggle': S.planFirst = !S.planFirst; t.classList.toggle('on', S.planFirst); t.setAttribute('aria-pressed', S.planFirst); return toast(S.planFirst ? 'Plan first: the bot plans, you approve once, then it runs' : 'Plan first off', { ms: 2500 });
     case 'artifacts': return openArtifacts();
@@ -3172,7 +3120,7 @@ function renderHome() {
   const card = (title, body, extra = '') => `<section class="home-card ${extra}"><h3>${title}</h3>${body}</section>`;
   const row = (key, av, top, sub, right = '') => `<button class="home-row" data-open="${esc(key)}">${av}<span class="hr-meta"><b>${top}</b><small>${sub}</small></span>${right}</button>`;
   const recent = SIDE_ITEMS.filter((it) => it.last).slice(0, 6);
-  // Empty cards fold into one line, so failures and the Proxmox grid get the first screen.
+  // Empty cards fold into one line, so failures get the first screen.
   const quiet = !working.length && !unread.length && !ranToday.length;
   const hb = bot(Number(localStorage.homeBot)) || d.bots[0];
   return `<header class="head"><button class="icon-btn menu-btn" data-act="menu" aria-label="Menu">${ICON.menu}</button><b class="home-title">Home</b>
@@ -3191,7 +3139,6 @@ function renderHome() {
         ${d.approvals.length ? card(`${ICON.lock} Needs you`, d.approvals.map((a) => row(a.thread, avatar(bot(a.bot_id), 30), esc(bot(a.bot_id)?.name || 'Bot'), esc(describeTool(a.tool, a.input)), `<span class="muted">${timeAgo(a.created_at)}</span>`)).join(''), 'urgent') : ''}
         ${quiet ? `<p class="home-quiet wide">${cloudArt('sleep')}<span>All quiet: no one working, nothing unread, no routines yet today${d.upNext.length ? ` · next: ${whenNext(d.upNext[0].next)} · ${esc(bot(d.upNext[0].bot_id)?.name || '')}` : ''}.</span></p>` : ''}
         <section class="home-card wide" id="home-digest"><h3>Since yesterday</h3>${SKEL}</section>
-        ${d.proxmox ? `<section class="home-card wide" id="home-pve">${pveHomeHtml(pveLast)}</section>` : ''}
         ${working.length ? card('Working now', working.map((b) => row('bot:' + b.id, avatar(b, 30), esc(b.name), esc(b.status.label || 'Working…'), '<span class="dot working"></span>')).join('')) : ''}
         ${unread.length ? card('Unread', unread.map((it) => row(it.key, it.av, esc(it.name), esc(it.last.text), `<span class="muted">${stamp(it.last.at)}</span>`)).join('')) : ''}
         ${quiet ? '' : card('Routines today', (ranToday.length ? ranToday.map((r) => row('bot:' + r.bot_id, avatar(bot(r.bot_id), 30), esc(bot(r.bot_id)?.name || 'Bot'), esc(r.prompt.slice(0, 80)), `<span class="muted">ran ${clock(r.last_run)}</span>`)).join('') : '<div class="muted">Nothing has run yet today.</div>')
@@ -3231,7 +3178,7 @@ function paletteItems() {
   const cur = bot(S.current?.id);
   if (cur && S.current?.type === 'bot') out.push(['new-thread', `New thread with ${cur.name}`, 'Action', ICON.compose], ['routines', `${cur.name}’s routines`, 'Action', ICON.clock],
     ['memory', `${cur.name}’s memory`, 'Action', ICON.book], ['plugins', `${cur.name}’s plugins`, 'Action', ICON.plug], ['edit-bot', `${cur.name} settings`, 'Action', ICON.gear], ['voice', `Voice chat with ${cur.name}`, 'Action', ICON.voice]);
-  out.push(['new-bot', 'New bot', 'Action', ICON.plus], ['new-room', 'New group chat', 'Action', ICON.plus], ['docs', 'Documents', 'Open', ICON.book], ['map', 'Homelab map', 'Open', ICON.monitor], ['office', 'Bot office', 'Open', ICON.home], ['set:backups', 'Backups', 'Open', ICON.box], ['set:autoapprove', 'Auto-approve', 'Open', ICON.check], ['set:skills', 'Skills', 'Open', ICON.box], ['set:connectors', 'Custom connectors (MCP)', 'Open', ICON.plug], ['set:dream', 'Self-review', 'Open', ICON.book], ['voice-mode', 'Voice mode', 'Action', ICON.wave], ['set:ipmap', 'IP map', 'Open', ICON.globe], ['set:logs', 'Search logs', 'Open', ICON.search], ['set:journal', 'Change journal', 'Open', ICON.clock],
+  out.push(['new-bot', 'New bot', 'Action', ICON.plus], ['new-room', 'New group chat', 'Action', ICON.plus], ['docs', 'Documents', 'Open', ICON.book], ['office', 'Bot office', 'Open', ICON.home], ['set:autoapprove', 'Auto-approve', 'Open', ICON.check], ['set:skills', 'Skills', 'Open', ICON.box], ['set:connectors', 'Custom connectors (MCP)', 'Open', ICON.plug], ['set:dream', 'Self-review', 'Open', ICON.book], ['voice-mode', 'Voice mode', 'Action', ICON.wave], ['set:ipmap', 'IP map', 'Open', ICON.globe], ['set:logs', 'Search logs', 'Open', ICON.search], ['set:journal', 'Change journal', 'Open', ICON.clock],
     ['appearance', 'Appearance and themes', 'Settings', ICON.gear], ['server', 'Server settings', 'Settings', ICON.monitor], ['log', 'Activity log', 'Open', ICON.clock],
     ['market', 'Connectors', 'Open', ICON.grid], ['cc-plugins', 'Plugins & skills', 'Open', ICON.plug], ['shortcuts', 'Keyboard shortcuts', 'Help', ICON.keyboard], ['panel', 'Approvals and activity', 'Open', ICON.bell], ['side-slim', document.body.classList.contains('side-slim') ? 'Full sidebar' : 'Slim sidebar (icons only)', 'Action', ICON.sidebar]);
   return out;
@@ -3309,7 +3256,7 @@ const SET_NAV = [
   ['Look', [['appearance', 'Appearance', ICON.gear, () => appearanceModal()]]],
   ['Account', [['claude', 'Claude account', ICON.plug, () => claudeModal()], ['mfa', 'Two-factor sign-in', ICON.lock, () => mfaModal()]]],
   ['Server', [['server', 'Server settings', ICON.monitor, () => serverModal()], ['status', 'System status', ICON.monitor, () => statusPage()], ['usage', 'Usage history', ICON.clock, () => usagePage()], ['log', 'Activity log', ICON.clock, () => activityLogModal()]]],
-  ['Homelab', [['backups', 'Backups', ICON.box, () => backupsPage()], ['ipmap', 'IP map', ICON.globe, () => ipMapPage()], ['logs', 'Logs', ICON.search, () => logsPage()], ['journal', 'Change journal', ICON.clock, () => journalPage()], ['hmap', 'Homelab map', ICON.monitor, () => { closeModal(true); setTimeout(() => mapPage(() => openSettings('backups')), 50); }], ['office', 'Bot office', ICON.home, () => { closeModal(true); setTimeout(() => officePage(() => openSettings('backups')), 50); }]]],
+  ['Tools', [['journal', 'Change journal', ICON.clock, () => journalPage()], ['office', 'Bot office', ICON.home, () => { closeModal(true); setTimeout(() => officePage(() => openSettings('journal')), 50); }]]],
   ['AI tools', [['autoapprove', 'Auto-approve', ICON.check, () => autoApprovePage()], ['dream', 'Self-review', ICON.book, () => dreamPage()], ['skills', 'Skills', ICON.box, () => skillsPage()], ['connectors', 'Custom connectors', ICON.plug, () => connectorsPage()]]],
   ['Automation', [['routing', 'Model routing', ICON.plug, () => routingPage()], ['watchdog', 'Watchdog', ICON.monitor, () => watchdogPage()], ['playbooks', 'Playbooks', ICON.check, () => playbooksPage()], ['handoffs', 'Hand-offs', ICON.plug, () => chainsPage()], ['facts', 'Team memory', ICON.book, () => factsPage()], ['budgets', 'Budgets', ICON.clock, () => budgetsPage()]]],
   ['Help', [['new', 'What’s new', ICON.book, () => whatsNew()], ['docs', 'Documents', ICON.book, () => docsModal()], ['tour', 'Take the tour', ICON.home, () => { closeModal(true); setTimeout(() => tour(), 200); }]]],
@@ -3319,7 +3266,7 @@ function notifyPane() {
   const el = modal(`<h3>${ICON.bell} Notifications</h3><p class="muted">${st}</p>${'Notification' in window && window.isSecureContext && Notification.permission === 'default' ? '<div class="row"><button class="btn primary" id="np-on">Turn on</button></div>' : ''}`);
   el.querySelector('#np-on')?.addEventListener('click', () => Notification.requestPermission().then(() => notifyPane()));
 }
-function openSettings(key = (['hmap', 'office'].includes(localStorage.setKey) ? 'backups' : localStorage.setKey) || 'appearance', render = null) {
+function openSettings(key = localStorage.setKey || 'appearance', render = null) {
   closeModal(true);
   setTimeout(() => {
     const el = modal(`<div class="set-wrap"><nav class="set-nav" aria-label="Settings"><div class="set-title"><b>Settings</b><button class="icon-btn" data-set-close aria-label="Close">${ICON.close}</button></div>
@@ -3327,7 +3274,7 @@ function openSettings(key = (['hmap', 'office'].includes(localStorage.setKey) ? 
       <button class="set-out" data-set-logout>${ICON.close}<span>Log out</span></button></nav><div class="set-body" id="set-body"></div></div>`, { wide: true, cls: 'set-modal' });
     const go = (k, fn = null) => {
       const item = SET_NAV.flatMap(([, i]) => i).find((i) => i[0] === k) || SET_NAV[1][1][0];
-      if (!['hmap', 'office'].includes(item[0])) localStorage.setKey = item[0];
+      if (item[0] !== 'office') localStorage.setKey = item[0];
       el.querySelectorAll('[data-set]').forEach((b) => b.classList.toggle('on', b.dataset.set === item[0]));
       MODAL_HOST = el.querySelector('#set-body'); MODAL_HOST.innerHTML = SKEL;
       (fn || item[3])();
@@ -3372,7 +3319,7 @@ function openSettings(key = (['hmap', 'office'].includes(localStorage.setKey) ? 
       try { await api(`/api/threads/${id}`, { method: 'PATCH', body: { archived: true } }); await refreshState();
         toast('Thread archived', { action: 'Undo', onAction: async () => { await api(`/api/threads/${id}`, { method: 'PATCH', body: { archived: false } }); refreshState(); } }); } catch (err) { toast(err.message); }
     } }
-    if (kind === 'pull') { const ind = $('#ptr'); if (d > 120) { buzz(8); pveAt = 0; try { await refreshState(); } catch {} } ind?.remove(); }
+    if (kind === 'pull') { const ind = $('#ptr'); if (d > 120) { buzz(8); try { await refreshState(); } catch {} } ind?.remove(); }
   });
 })();
 

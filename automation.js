@@ -1,4 +1,4 @@
-// Automation that runs on the server without Claude: playbooks (saved fixes), the homelab watchdog,
+// Automation that runs on the server without Claude: playbooks (saved fixes), the watchdog,
 // the morning digest, shared team memory, hand-off rules between bots, scheduled messages,
 // weekly budgets per bot and a read-only status page. Claude is only called when a rule says so.
 import crypto from 'node:crypto';
@@ -191,12 +191,12 @@ function dueMessages() {
 
 // ---------- status page ----------
 const STATUS_HTML = (rows, at) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="60"><title>Homelab status</title><link rel="icon" href="/icon-32.png"><style>
+<meta http-equiv="refresh" content="60"><title>Status</title><link rel="icon" href="/icon-32.png"><style>
 body{font:15px system-ui,sans-serif;background:#0f1a45;color:#eef2ff;margin:0;display:flex;justify-content:center}main{width:min(560px,92vw);padding:40px 0}
 h1{font-size:22px;margin:0 0 4px}p{color:#9aa6d6;margin:0 0 24px}.all{padding:14px 16px;border-radius:12px;margin-bottom:18px;font-weight:600}
 .ok{background:#14532d}.bad{background:#7f1d1d}ul{list-style:none;padding:0;margin:0;background:#16204a;border-radius:12px;overflow:hidden}
 li{display:flex;justify-content:space-between;padding:12px 16px;border-top:1px solid #23306a}li:first-child{border:0}.s{font-size:13px}.up{color:#4ade80}.down{color:#f87171}.unknown{color:#9aa6d6}
-</style></head><body><main><h1>☁️ Homelab status</h1><p>Checked every 2 minutes · updated ${at}</p>
+</style></head><body><main><h1>☁️ Status</h1><p>Checked every 2 minutes · updated ${at}</p>
 ${rows.some((r) => r.state === 'down') ? '<div class="all bad">Something is down</div>' : '<div class="all ok">Everything is running</div>'}
 <ul>${rows.map((r) => `<li><span>${r.name.replace(/[<>&]/g, '')}</span><span class="s ${r.state}">${r.state === 'up' ? '● Up' : r.state === 'down' ? '● Down' : '○ Checking'}</span></li>`).join('')}</ul></main></body></html>`;
 

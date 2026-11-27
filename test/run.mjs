@@ -151,8 +151,8 @@ async function main() {
     eq((await req('POST', '/api/login', { password: PW }, { 'x-forwarded-for': '10.7.7.6' })).status, 200, 'other device still in');
   });
   await test('secret settings are never sent back', async () => {
-    await req('PUT', '/api/settings', { pve_token_secret: 'abc-secret' });
-    eq((await req('GET', '/api/settings')).json.pve_token_secret, '__saved__');
+    await req('PUT', '/api/settings', { agent_token: 'abc-secret' });
+    eq((await req('GET', '/api/settings')).json.agent_token, '__saved__');
   });
   await test('widgets: list is empty for a bot with none', async () => { const r = await req('GET', '/api/widgets?bot=1'); eq(r.status, 200); eq(r.json.widgets.length, 0); });
   await test('widgets: pinning a missing widget is a 404', async () => eq((await req('POST', '/api/widgets/999/pin', {})).status, 404));

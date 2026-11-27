@@ -14,7 +14,7 @@ const get = (p) => fetch(`http://127.0.0.1:${process.env.PORT || 8787}${p}`, { h
 const hours = Number(process.argv[2] || 24);
 const since = Date.now() / 1000 - hours * 3600;
 
-const [state, act, plan, backup] = await Promise.all([get('/api/state'), get('/api/activity?days=' + Math.ceil(hours / 24)), get('/api/plan-usage'), get('/api/backup')]);
+const [state, act, plan, backup] = await Promise.all([get('/api/state'), get('/api/activity?days=' + Math.ceil(hours / 24)), get('/api/plan-usage')]);
 const name = (id) => state.bots.find((b) => b.id === id)?.name || `Bot ${id}`;
 const runs = act.runs.filter((r) => r.started_at >= since);
 const out = [`Nimbus team status, last ${hours} h (${new Date().toLocaleString()})`, ''];
@@ -35,6 +35,4 @@ for (const b of state.bots) {
 if (checks.length) out.push('', 'Scheduled checks:', ...checks);
 out.push('', `Approvals waiting: ${state.approvals.length}${state.approvals.length ? ' (' + state.approvals.map((a) => `${name(a.bot_id)}: ${a.tool}`).join('; ') + ')' : ''}`);
 if (plan.ok) out.push(`Claude plan: ${plan.windows.map((w) => `${w.label} ${Math.round(w.used)}% used`).join(', ')}`);
-const bk = backup.last;
-out.push(`Last backup: ${!bk ? 'none yet' : bk.ok ? `${new Date(bk.at).toLocaleString()}, ${(bk.size / 1e6).toFixed(0)} MB${bk.remote ? ', copied off-server' : ', on the Nimbus server only'}` : 'FAILED: ' + bk.error}`);
 console.log(out.join('\n'));

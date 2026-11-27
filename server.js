@@ -117,7 +117,7 @@ function state(req) {
   const sideGroups = JSON.parse(getSetting('side_groups') || '[]'); // sidebar groups: [{ id, name, collapsed, keys }]
   const { threads, projects } = TH.listAll();
   const busyThreads = q("SELECT DISTINCT thread FROM runs WHERE status='running'").all().map((r) => r.thread);
-  return { moods: moods(), busyThreads, sideOrder, sideGroups, threads, projects, threadLimit: threadLimit(), bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), claude: claudeStatus(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
+  return { moods: moods(), busyThreads, sideOrder, sideGroups, threads, projects, threadLimit: threadLimit(), bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), claude: claudeStatus(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
 }
 
 function postToThread(thread, text, files = [], voice = null) {
@@ -449,7 +449,7 @@ route('GET', '/api/models', async (req, res) => json(res, 200, await getModels(c
 registerFiles(route, { json, body, broadcast, addNote: (thread, text, files) => addMessage(thread, 'system', 'note', text, null, files) });
 
 // Feature modules all get the same context and add their own routes.
-const featureCtx = { json, body, q, DATA_DIR, broadcast, postToThread, pveGet, pveConfig };
+const featureCtx = { json, body, q, DATA_DIR, broadcast, postToThread };
 for (const register of [registerSpeech, registerPages, registerAutomation, registerHomelab, registerAiTools, registerCodeIde]) register(route, featureCtx);
 registerWidgets(route, { json, body, hookAuth });
 
@@ -1055,12 +1055,11 @@ route('DELETE', '/api/claude-account', (req, res) => {
   json(res, 200, { ok: true });
 });
 
-// ---------- server settings (bot computers, Proxmox) ----------
+// ---------- server settings (bot computers) ----------
 // Secrets are write-only: the app sees whether one is saved, never its value.
 const SETTINGS = [
   { key: 'agent_url', env: 'NIMBUS_AGENT_URL' }, { key: 'agent_token', env: 'NIMBUS_AGENT_TOKEN', secret: true }, { key: 'callback_url', env: 'NIMBUS_CALLBACK_URL' },
-  { key: 'pve_host' }, { key: 'pve_token_id' }, { key: 'pve_token_secret', secret: true },
-  { key: 'backup_target' }, { key: 'auto_compact_pct', env: 'NIMBUS_AUTO_COMPACT_PCT' },
+  { key: 'auto_compact_pct', env: 'NIMBUS_AUTO_COMPACT_PCT' },
   { key: 'thread_limit' }, { key: 'usage_guard_pct' }, { key: 'memory_cap' }, { key: 'memory_min_days' },
   { key: 'trusted_proxies', env: 'NIMBUS_TRUSTED_PROXIES' }, { key: 'trusted_bots', env: 'NIMBUS_TRUSTED_BOTS' }, { key: 'sandbox', env: 'NIMBUS_SANDBOX' }
 ];
@@ -1082,73 +1081,19 @@ route('PUT', '/api/settings', async (req, res) => {
     if (s.key === 'trusted_proxies' && v && !/^[\d.:a-f]+([\s,]+[\d.:a-f]+)*$/i.test(v)) return json(res, 400, { error: 'Trusted proxies: IP addresses separated by commas, e.g. 192.168.1.2' });
     if (s.key === 'trusted_bots' && v && !/^\d+([\s,]+\d+)*$/.test(v)) return json(res, 400, { error: 'Trusted bots: bot numbers separated by commas, e.g. 3' });
     if (s.key === 'sandbox' && v && !/^(off|all|-?\d+)([\s,]+-?\d+)*$/i.test(v.replace(/^all\b/i, 'all'))) return json(res, 400, { error: 'Sandbox: off, all, bot numbers (e.g. 5,9), or all,-3 for every bot but #3' });
-    if (s.key === 'backup_target' && v && !/^[\w.-]+@[\w.-]+:\/[^\s]*$/.test(v)) return json(res, 400, { error: 'Backup target should look like user@host:/path' });
     if (/_url$/.test(s.key) && v && !/^https?:\/\/[^\s]+$/.test(v)) return json(res, 400, { error: `${s.key.replace('_', ' ')} must start with http:// or https://` });
     toSave.push([s.key, v]);
   }
   db.exec('BEGIN'); try { for (const [k, v] of toSave) setSetting(k, v); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; }
-  pveCache = null;
   broadcast('state_changed', {});
-  json(res, 200, { ok: true, computers: computersOn(), proxmox: !!pveConfig() });
+  json(res, 200, { ok: true, computers: computersOn() });
 });
 route('POST', '/api/settings/test-agent', (req, res) => computerRoute(res, () => agent('/health')));
-
-function pveConfig() {
-  const host = getSetting('pve_host'), id = getSetting('pve_token_id'), secret = getSetting('pve_token_secret');
-  return host && id && secret ? { host, id, secret } : null;
-}
-// Proxmox uses a self-signed certificate by default, so certificate checks are off for this LAN call only.
-function pveGet(cfg, p) {
-  return new Promise((resolve, reject) => {
-    const r = https.get({ host: cfg.host, port: 8006, path: '/api2/json' + p, rejectUnauthorized: false, timeout: 5000,
-      headers: { authorization: `PVEAPIToken=${cfg.id}=${cfg.secret}` } }, (resp) => {
-      let s = ''; resp.on('data', (c) => (s += c));
-      resp.on('end', () => resp.statusCode === 200 ? resolve(JSON.parse(s).data) : reject(new Error(`Proxmox said ${resp.statusCode}`)));
-    });
-    r.on('timeout', () => r.destroy(new Error('Proxmox didn’t answer')));
-    r.on('error', reject);
-  });
-}
-let pveCache = null; // { at, data }
-route('GET', '/api/proxmox', async (req, res) => {
-  const cfg = pveConfig();
-  if (!cfg) return json(res, 200, { configured: false });
-  if (pveCache && Date.now() - pveCache.at < 15000) return json(res, 200, pveCache.data);
-  try {
-    const [nodes, guests] = await Promise.all([pveGet(cfg, '/nodes'), pveGet(cfg, '/cluster/resources?type=vm')]);
-    const data = { configured: true,
-      nodes: nodes.map((n) => ({ name: n.node, status: n.status, cpu: n.cpu, mem: n.mem, maxmem: n.maxmem, disk: n.disk, maxdisk: n.maxdisk, uptime: n.uptime })),
-      guests: guests.filter((g) => !g.template).map((g) => ({ id: g.vmid, name: g.name, type: g.type, status: g.status, node: g.node })).sort((a, b) => a.id - b.id) };
-    pveCache = { at: Date.now(), data };
-    json(res, 200, data);
-  } catch (e) { json(res, 200, { configured: true, error: e.message }); }
-});
 
 // ---------- Claude plan usage (planusage.js) ----------
 route('GET', '/api/plan-usage', async (req, res) => json(res, 200, await getPlanUsage()));
 
 // ---------- read aloud, dictation, translation: speech.js ----------
-// ---------- backups (bin/backup.mjs) ----------
-// Nightly at 03:15 local time, plus "Back up now" in Server settings. The last result is kept in settings.
-let backupRunning = false;
-function runBackup() {
-  if (backupRunning) return Promise.resolve(JSON.parse(getSetting('backup_last') || '{}'));
-  backupRunning = true;
-  return new Promise((resolve) => execFile(process.execPath, ['--no-warnings', path.join(HERE, 'bin/backup.mjs')], { timeout: 30 * 60_000 }, (err, out) => {
-    backupRunning = false;
-    let r; try { r = JSON.parse(String(out).trim().split('\n').pop()); } catch { r = { ok: false, error: err?.message || 'backup failed', at: Date.now() }; }
-    setSetting('backup_last', JSON.stringify(r));
-    if (!r.ok) addMessage('bot:3', 'system', 'note', `⚠ Nightly backup failed: ${r.error}`);
-    resolve(r);
-  }));
-}
-setInterval(() => {
-  const d = new Date();
-  if (d.getHours() === 3 && d.getMinutes() === 15) runBackup();
-}, 60_000).unref();
-route('GET', '/api/backup', (req, res) => json(res, 200, { last: JSON.parse(getSetting('backup_last') || 'null'), running: backupRunning }));
-route('POST', '/api/backup', async (req, res) => json(res, 200, await runBackup()));
-
 // ---------- search, activity log, usage by bot ----------
 // Full-text index of readable messages (not run traces), kept current by triggers; built once from what's there.
 const FTS_KINDS = "('text','quiet','note')";

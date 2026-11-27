@@ -324,11 +324,6 @@ async function serverModal() {
     <label class="field">Agent URL<input id="s-agent_url" value="${esc(v.agent_url)}" placeholder="http://<computer-vm-ip>:8788"></label>
     <label class="field">Agent token<input id="s-agent_token" ${secret('agent_token')}></label>
     <label class="field">Callback URL<input id="s-callback_url" value="${esc(v.callback_url)}" placeholder="http://<this-server-ip>:8787"><span class="hint">How the VM reaches this Nimbus for approvals.</span></label>
-    <h3>Proxmox</h3>
-    <p class="muted">Shows host load and guest status in the Activity panel. A read-only (PVEAuditor) API token is enough.</p>
-    <label class="field">Host<input id="s-pve_host" value="${esc(v.pve_host)}" placeholder="<proxmox-host-ip>"></label>
-    <label class="field">Token ID<input id="s-pve_token_id" value="${esc(v.pve_token_id)}" placeholder="user@pve!tokenname"></label>
-    <label class="field">Token secret<input id="s-pve_token_secret" ${secret('pve_token_secret')}></label>
     <div class="update-box"><button class="btn small" data-update>Update computers</button><span class="muted" id="upd-status">Rebuilds them with the latest Claude Code and Chromium. Files, browsers and sign-ins are kept; computers restart.</span></div>
     <h3>Chats</h3>
     <label class="field">Trusted proxies<input id="s-trusted_proxies" value="${esc(v.trusted_proxies || '')}" placeholder="192.168.1.2"><span class="hint">Reverse proxies in front of Nimbus (e.g. Nginx Proxy Manager). Their requests are counted by the real device’s address, so wrong passwords from one device don’t lock out everyone.</span></label>
@@ -339,14 +334,7 @@ async function serverModal() {
     <label class="field">Auto-compact at (% of context)<input id="s-auto_compact_pct" type="number" min="0" max="95" value="${esc(v.auto_compact_pct || '20')}"><span class="hint">When a chat’s context passes this, Nimbus compacts it between messages. 0 turns it off. You can also type <code>/compact</code> in any chat.</span></label>
     <label class="field">Short-term memory size (lines)<input id="s-memory_cap" type="number" min="5" max="200" value="${esc(v.memory_cap || '40')}"><span class="hint">Each bot’s MEMORY.md is loaded on every run, so keep it short. When it grows past this, its oldest unpinned lines move to LONG_MEMORY.md, which bots search when they need something. Lines ending in <code>[pin]</code> never move.</span></label>
     <label class="field">Keep new lines short-term for (days)<input id="s-memory_min_days" type="number" min="0" max="365" value="${esc(v.memory_min_days || '') || '7'}"><span class="hint">A line has to be at least this old before it can move to long-term memory, so recent lessons get used first. 0 means no wait.</span></label>
-    <h3>Backups</h3>
-    <p class="muted">Every night at 3:15 Nimbus saves an encrypted copy of all bots, chats, memories and settings (last 14 kept on this server).
-      Set a target to also copy each backup to another machine. Keep the key file <code>~/opt/nimbus-backup.key</code> somewhere safe: backups can’t be opened without it.</p>
-    <label class="field">Copy backups to (optional)<input id="s-backup_target" value="${esc(v.backup_target || '')}" placeholder="user@nas:/mnt/pool/nimbus-backups"><span class="hint">Over SSH, using this server’s key.</span></label>
-    <div class="update-box"><button class="btn small" data-backup>Back up now</button><span class="muted" id="bk-status">Checking…</span></div>
     <div class="modal-foot"><button class="btn left" data-test>Test computer VM</button><button class="btn" data-close>Cancel</button><button class="btn primary" data-save>Save</button></div>`);
-  api('/api/backup').then(({ last }) => { const st = $('#bk-status', el); if (st) st.textContent = !last ? 'No backup yet.'
-    : last.ok ? `Last backup ${timeAgo(Math.round(last.at / 1000))}: ${fmtSize(last.size)}${last.remote ? ', copied to ' + last.remote : ', on this server only'}` : `✗ Last backup failed: ${last.error}`; }).catch(() => {});
   const values = () => {
     const out = {};
     for (const k of Object.keys(v)) { const i = $('#s-' + k, el); if (!i) continue; out[k] = i.type === 'password' && !i.value ? (v[k] ? '__saved__' : '') : i.value; }
@@ -355,13 +343,6 @@ async function serverModal() {
   el.addEventListener('click', async (e) => {
     if (e.target.closest('[data-close]')) return closeModal();
     try {
-      if (e.target.closest('[data-backup]')) {
-        await api('/api/settings', { method: 'PUT', body: values() });
-        $('#bk-status', el).textContent = 'Backing up…';
-        const r = await api('/api/backup', { method: 'POST' });
-        $('#bk-status', el).textContent = r.ok ? `✓ Saved ${fmtSize(r.size)}${r.remote ? ' and copied to ' + r.remote : ''}` : '✗ ' + r.error;
-        return;
-      }
       if (e.target.closest('[data-update]')) {
         if (!await askConfirm('Update all bot computers now? Each one restarts, so any task running on a computer is interrupted. It takes a few minutes.', { ok: 'Update now', danger: false })) return;
         await api('/api/computers/update', { method: 'POST' });
@@ -384,7 +365,7 @@ async function serverModal() {
       }
       if (e.target.closest('[data-save]')) {
         await api('/api/settings', { method: 'PUT', body: values() });
-        pveAt = 0; closeModal(); await refreshState(); toast('Settings saved');
+        closeModal(); await refreshState(); toast('Settings saved');
       }
     } catch (err) { toast(err.message); }
   });
