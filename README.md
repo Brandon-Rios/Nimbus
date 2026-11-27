@@ -11,7 +11,7 @@ background, and they stop and ask before anything risky.
 - Routines on a schedule (cron), running even when the app is closed
 - Per-bot memory the bot updates itself (`MEMORY.md`)
 - Themes, accent color, light/dark
-- Email + password accounts with optional two-factor codes; reach it from your phone through Twingate
+- Email + password accounts with optional two-factor codes; reach it from your phone through a VPN or private-access service
 - Android app (build it yourself, see [android/README.md](android/README.md)): dictation, file uploads, notifications
 - Threads and projects per bot, an Inbox for requests between bots, and a Routines thread
 - Files and live documents: attach or get Word/Excel/PowerPoint/PDF files with previews and versions; live docs the
@@ -62,25 +62,27 @@ Nimbus can't send email, so it can't verify an address; only listed emails can s
 Everyone who signs in shares the same bots.
 You sign in once per device; sessions last 90 days.
 
-## Reach it from your phone (Twingate)
+## Reach it from your phone (VPN or private access)
 
-1. In the Twingate admin console, add a **Resource** for the server: its LAN IP or hostname,
-   port `8787`, served by a Connector that can reach the server.
-2. Give your account access to that Resource and install the Twingate client on your phone.
-3. With Twingate on, open `http://<server-ip-or-hostname>:8787` and log in.
+Use whatever private-access tool you already have: Twingate, Tailscale, WireGuard, or your router's VPN. Nimbus only needs
+the phone to reach the server's LAN address on port `8787`. For Twingate, for example:
+
+1. Add a **Resource** for the server: its LAN IP or hostname, port `8787`, served by a Connector that can reach the server.
+2. Give your account access to that Resource and install the client on your phone.
+3. With the VPN or private access on, open `http://<server-ip-or-hostname>:8787` and log in.
 4. In Safari/Chrome, choose **Add to Home Screen**.
 
-Keep port 8787 closed to the internet on your router/VPS firewall, so only Twingate can reach it:
+Keep port 8787 closed to the internet on your router/VPS firewall, so only your VPN or private access can reach it:
 
 ```bash
 sudo ufw allow from <connector-ip> to any port 8787   # or your LAN subnet, e.g. 192.168.1.0/24
 sudo ufw deny 8787
 ```
 
-**Notifications and HTTPS:** phone notifications need HTTPS, which plain `http://` over Twingate
+**Notifications and HTTPS:** phone notifications need HTTPS, which plain `http://` over a VPN
 doesn't give you. Everything else works without it. To get notifications, put Nimbus behind
 Caddy with an internal certificate (`tls internal`) and trust Caddy's root certificate on your
-phone, then point the Twingate Resource at Caddy's port and set `NIMBUS_SECURE_COOKIE=1`.
+phone, then point your VPN or private-access route at Caddy's port and set `NIMBUS_SECURE_COOKIE=1`.
 
 ## Keep it running (systemd)
 
@@ -193,7 +195,7 @@ or clone the repo inside its folder.
 - Bots can run any command as the Nimbus user. Run Nimbus as a dedicated user that only has
   access to what the bots should touch.
 - Approval rules are a safety net, not a sandbox. Review the defaults in each bot's settings.
-- Don't open port 8787 to the internet; let Twingate be the only way in. The password is a second lock.
+- Don't open port 8787 to the internet; let your VPN or private access be the only way in. The password is a second lock.
 - Failed logins are rate-limited (8 tries, then 15 minutes). Logins last 90 days per device; **Log out** in the sidebar ends one.
 - Behind a reverse proxy (Nginx Proxy Manager, Caddy…), add its address to **Trusted proxies** in Server settings;
   otherwise every device looks like the proxy and one device's wrong passwords lock everyone out.

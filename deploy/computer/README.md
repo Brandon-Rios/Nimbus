@@ -91,7 +91,7 @@ websites. The bot's next task runs on its computer.
 
 - **Storage:** each bot's home folder is a Docker volume (`nimbus-bot-<id>`), so files and
   sign-ins survive restarts. **Delete computer** in Nimbus erases it.
-- **Security:** keep ports 8788 and 3100+ reachable only from your LAN / Twingate. Each
+- **Security:** keep ports 8788 and 3100+ reachable only from your LAN or VPN. Each
   screen has its own password (shown in Nimbus). Bots can run anything inside their own
   container, but not on the VM or your other machines.
 - **Memory:** Nimbus sends the bot's instructions and memory in with each task and saves

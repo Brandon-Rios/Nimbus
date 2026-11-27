@@ -42,7 +42,7 @@ export async function watchdogPage(edit = null) {
       <label class="ex-check"><input type="checkbox" name="enabled" ${cur.enabled ?? 1 ? 'checked' : ''}> On</label>
       <div class="ex-btns">${cur.id ? '<button type="button" class="btn" data-w-cancel>Cancel</button>' : ''}<button class="btn primary">${cur.id ? 'Save' : 'Add'}</button></div></form>
     <div class="ex-form"><h3>Status page</h3><label class="ex-check"><input type="checkbox" id="sp-on" ${sp.on ? 'checked' : ''}> Share a read-only page at <a href="/status" target="_blank">${location.origin}/status</a></label>
-      <p class="muted small">No login needed: it shows only names and up/down, no addresses. Anyone who can reach Nimbus (your network, Twingate) can open it.</p></div>
+      <p class="muted small">No login needed: it shows only names and up/down, no addresses. Anyone who can reach Nimbus (your network or VPN) can open it.</p></div>
     ${log.items.length ? `<div class="ex-form"><h3>Recent changes</h3>${log.items.slice(0, 12).map((l) => `<div class="ex-log"><span class="ex-dot ${l.state}"></span>${X.esc(l.name)} went ${l.state} <span class="muted">· ${X.esc(l.detail)} · ${ago(l.at)}</span></div>`).join('')}</div>` : ''}`;
   top(el);
   el.querySelector('[name=kind]').addEventListener('change', (e) => { el.querySelector('[name=target]').placeholder = KINDS[e.target.value][1]; });
